@@ -1,0 +1,15 @@
+{
+  "name": "clutch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Clutch — multi-tenant operational automation for Heartland Retail",
+  "license": "MIT",
+  "workspaces": [
+    "heartland-webhooks-core"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  }
+}
