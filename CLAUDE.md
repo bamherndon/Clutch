@@ -33,6 +33,17 @@ npm test
 npx jest tests/lambda/create-transaction-lambda.test.ts   # single file
 ```
 
+## CI
+
+`.github/workflows/ci.yml` runs `npm ci && npm run build` on Node 20 for every pull
+request and every push to `main`. Because the root `build` fans out with
+`--workspaces --if-present`, a new package is covered as soon as it declares a `build`
+script — no workflow edit needed.
+
+`npm run build` is the same command CI runs, so a green local build means a green CI run.
+Run it before pushing. Note CI uses `npm ci`, which fails if `package-lock.json` is out of
+sync with a `package.json`; commit the lockfile alongside any dependency change.
+
 ## Architecture
 
 Clutch separates webhook **transport** from tenant **business logic**.

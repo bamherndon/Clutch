@@ -31,7 +31,7 @@ of the environment.
 | Package | Purpose |
 |---|---|
 | [`heartland-webhooks-core`](./heartland-webhooks-core) | Reusable, tenant-agnostic webhook receiving, parsing, tenant routing, and the Heartland REST client |
-| [`design`](./design) | The design record: architecture, multi-tenancy, the webhook lifecycle, conventions, ADRs, and known gaps. Prose only — nothing to build |
+| [`design`](./design) | Top-level design record: the BAM ecosystem, module boundaries, invariants, roadmap, and system-wide ADRs. Prose only — nothing to build. Each module documents itself in its own `design/` folder |
 
 ## Architecture
 
@@ -89,6 +89,10 @@ npm run build        # lint + test + tsc
 npm test             # jest with coverage
 npx jest tests/lambda/create-transaction-lambda.test.ts   # single file
 ```
+
+CI runs `npm ci && npm run build` on Node 20 for every pull request and every push to
+`main` ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). That is the same command
+as above, so a green local build means a green CI run.
 
 ## Status
 

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+    # Default activity types, spelled out: a PR is checked when opened, when new
+    # commits are pushed to it, and when it is reopened.
+    types: [opened, synchronize, reopened]
+  # Also guard the default branch, so a merge that breaks main is visible even
+  # though every PR was green.
+  push:
+    branches: [main]
+
+# A new push to a PR makes the in-flight run obsolete; cancel it rather than
+# paying for a result nobody will read. Never cancel runs on main.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Node version the Lambdas run on.
+          node-version: 20
+          cache: npm
+
+      # `npm ci` rather than `npm install`: it installs exactly what
+      # package-lock.json specifies and fails if the lockfile is out of sync
+      # with package.json, which is a mistake worth catching here.
+      - name: Install dependencies
+        run: npm ci
+
+      # Fans out to every workspace via `--workspaces --if-present`, so a new
+      # package is covered as soon as it declares a `build` script. Each
+      # package's own build is lint + test + tsc.
+      - name: Build, lint, and test
+        run: npm run build
