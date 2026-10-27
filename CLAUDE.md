@@ -42,15 +42,25 @@ business logic and no knowledge of any particular store. Business logic arrives 
 `TransactionHandler` / `ItemHandler` that the calling module constructs and injects at
 Lambda initialization.
 
-Two invariants hold the design together. Breaking either defeats the refactor that created
-this repo:
+Three invariants hold the design together. Breaking any of them defeats the refactor that
+created this repo:
 
-1. **Nothing in core reads tenant configuration from `process.env`.** Every tenant-varying
-   value — base URL, API token, Heartland client — reaches a plugin through
+1. **Handlers are multi-tenant.** One handler instance serves every tenant. It receives a
+   `TenantContext` per invocation and must hold no per-tenant state. There is no
+   handler-per-tenant map anywhere; `TenantConfig` is configuration only and carries no
+   business logic.
+2. **Nothing reads tenant configuration from `process.env`.** Every tenant-varying value —
+   base URL, API token, Heartland client, logger — reaches a handler through
    `TenantContext`. Reading the environment inside a handler or strategy is what made the
    predecessor single-tenant.
-2. **Core does not import business logic.** Dependencies point inward: tenant packages
+3. **Core does not import business logic.** Dependencies point inward: tenant packages
    depend on core, never the reverse.
+
+Credentials are core's concern, not a handler's. `TenantConfig.getToken` exists only so
+core can build the authenticated `HeartlandApiClient` exposed as `context.heartland`;
+handlers never see a token. It is optional — a tenant whose handler never calls Heartland
+back needs none, and `context.heartland` then rejects every call with an explanatory error
+rather than failing obscurely.
 
 ### Layout
 
@@ -58,8 +68,8 @@ this repo:
 heartland-webhooks-core/src/
   model/        Heartland payload types + classification helpers
   parsing/      ParseResult-returning body parsers; typed JSON readers
-  handlers/     TransactionHandler / ItemHandler — the plugin contract
-  tenancy/      TenantDefinition, TenantRegistry, TenantResolver
+  handlers/     TransactionHandler / ItemHandler — the handler contract
+  tenancy/      TenantConfig, TenantRegistry, TenantResolver
   lambda/       pipeline.ts (shared plumbing) + the two entrypoint factories
   clients/      requestJson + HeartlandApiClient
   logging/      Logger, ConsoleLogger, NoopLogger
@@ -76,10 +86,11 @@ over the same pipeline rather than a new copy of the flow.
   field. Heartland disables endpoints that keep returning errors. Tests assert on `status`,
   not `statusCode`.
 - Parsers return `ParseResult<T>` and never throw. A malformed webhook body is routine.
-- Plugin exceptions are contained by the pipeline, logged, and reported as
+- Handler exceptions are contained by the pipeline, logged, and reported as
   `status: "error"`.
 - Tenant tokens load lazily via `getToken` and memoize per process; failed loads are not
-  cached.
+  cached. `supports()` runs before context construction, so an unsupported event costs no
+  secret load.
 - Tests use `NoopLogger` and inject a fake client through `clientFactory`. No test should
   make a network call.
 

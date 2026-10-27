@@ -46,7 +46,7 @@ export {
 // Tenancy
 export {
   TenantId,
-  TenantDefinition,
+  TenantConfig,
   TenantContext,
   UnknownTenantError,
 } from './tenancy/tenant';

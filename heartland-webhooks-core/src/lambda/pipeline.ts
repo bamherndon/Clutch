@@ -8,16 +8,21 @@ import { ParseResult } from '../parsing/result';
 import { TenantRegistry } from '../tenancy/registry';
 import { TenantResolver } from '../tenancy/resolver';
 import { TenantContext } from '../tenancy/tenant';
-import { WebhookResponseBody, webhookResponse } from './response';
+import { webhookResponse } from './response';
 
 /**
  * Everything that differs between the transaction and item webhooks. The
  * surrounding plumbing — envelope logging, tenant resolution, parsing, error
  * containment, response shaping — is shared.
+ *
+ * The handler is a single multi-tenant instance, not one per tenant: it is
+ * given a {@link TenantContext} on every invocation and takes everything
+ * tenant-varying from there.
  */
 export interface WebhookPipeline<TPayload, THandler> {
   eventType: string;
-  registry: TenantRegistry<THandler>;
+  handler: THandler;
+  registry: TenantRegistry;
   resolveTenant?: TenantResolver;
   logger: Logger;
   parse(body: string): ParseResult<TPayload>;
@@ -37,7 +42,7 @@ export function createWebhookLambda<TPayload, THandler>(
 ): (
   event: APIGatewayProxyEventV2
 ) => Promise<APIGatewayProxyStructuredResultV2> {
-  const { eventType, registry, logger } = pipeline;
+  const { eventType, handler, registry, logger } = pipeline;
 
   if (registry.size === 0) {
     throw new Error(
@@ -52,6 +57,7 @@ export function createWebhookLambda<TPayload, THandler>(
   }
 
   const log = logger.child(eventType);
+  const handlerName = pipeline.handlerName(handler);
 
   return async (event) => {
     log.info('Received webhook', {
@@ -63,18 +69,26 @@ export function createWebhookLambda<TPayload, THandler>(
       },
     });
 
-    const respond = (
-      body: WebhookResponseBody
-    ): APIGatewayProxyStructuredResultV2 => webhookResponse(body);
-
     const ignored = (reason: string, extra: Record<string, unknown> = {}) => {
       log.warn(`Ignoring webhook: ${reason}`, extra);
-      return respond({ status: 'ignored', eventType, ok: false, reason, ...extra });
+      return webhookResponse({
+        status: 'ignored',
+        eventType,
+        ok: false,
+        reason,
+        ...extra,
+      });
     };
 
     const failed = (reason: string, extra: Record<string, unknown> = {}) => {
       log.error(`Webhook failed: ${reason}`, extra);
-      return respond({ status: 'error', eventType, ok: false, reason, ...extra });
+      return webhookResponse({
+        status: 'error',
+        eventType,
+        ok: false,
+        reason,
+        ...extra,
+      });
     };
 
     if (!event.body) {
@@ -109,23 +123,20 @@ export function createWebhookLambda<TPayload, THandler>(
     const payload = parsed.value;
     const described = pipeline.describe(payload);
 
-    let handler: THandler;
-    let context: TenantContext;
-    try {
-      ({ handler, context } = await registry.resolve(tenantId));
-    } catch (err) {
-      return failed(`tenant initialization failed: ${String(err)}`, {
-        tenantId,
-        ...described,
-      });
-    }
-
-    const handlerName = pipeline.handlerName(handler);
-
     if (!pipeline.supports(handler, payload)) {
       return ignored('handler does not support this event', {
         tenantId,
         handler: handlerName,
+        ...described,
+      });
+    }
+
+    let context: TenantContext;
+    try {
+      context = await registry.context(tenantId);
+    } catch (err) {
+      return failed(`tenant initialization failed: ${String(err)}`, {
+        tenantId,
         ...described,
       });
     }
@@ -136,7 +147,7 @@ export function createWebhookLambda<TPayload, THandler>(
     try {
       outcome = toOutcome(await pipeline.invoke(handler, payload, context));
     } catch (err) {
-      // Contain plugin failures: report them in the body and logs, but still
+      // Contain handler failures: report them in the body and logs, but still
       // answer 200 so Heartland keeps the endpoint enabled.
       context.logger.error('Handler threw', err);
       return failed(`handler threw: ${String(err)}`, {
@@ -148,7 +159,7 @@ export function createWebhookLambda<TPayload, THandler>(
 
     context.logger.info(`Handled webhook (ok=${outcome.ok})`, outcome.details);
 
-    return respond({
+    return webhookResponse({
       status: outcome.ok ? 'ok' : 'error',
       eventType,
       ok: outcome.ok,

@@ -17,8 +17,11 @@ export interface WebhookOutcome {
 /**
  * Business logic for `sales_transaction_completed` events.
  *
- * Implementations receive an already-parsed transaction and a tenant context;
- * they must not read tenant configuration from `process.env`.
+ * **One handler instance serves every tenant.** The transaction and the
+ * `TenantContext` both arrive as arguments, so an implementation must keep no
+ * per-tenant state of its own and must not read tenant configuration from
+ * `process.env`. Anything tenant-varying — base URL, Heartland client, logger —
+ * comes from the context.
  *
  * Returning nothing is equivalent to `{ ok: true }`. Throwing is reported as a
  * failed outcome and logged — it does not fail the HTTP response, because

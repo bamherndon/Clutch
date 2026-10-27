@@ -9,17 +9,19 @@ import {
   summarizeTransaction,
 } from '../model/transaction';
 import { parseTransactionBody } from '../parsing/transaction-parser';
-import {
-  HeartlandClientFactory,
-  TenantRegistry,
-} from '../tenancy/registry';
+import { HeartlandClientFactory, TenantRegistry } from '../tenancy/registry';
 import { TenantResolver } from '../tenancy/resolver';
-import { TenantDefinition } from '../tenancy/tenant';
+import { TenantConfig } from '../tenancy/tenant';
 import { createWebhookLambda } from './pipeline';
 
 export interface TransactionLambdaOptions {
+  /**
+   * The business logic, shared across every tenant. It receives a
+   * `TenantContext` per invocation and must hold no per-tenant state.
+   */
+  handler: TransactionHandler;
   /** Every Heartland instance this deployment serves. */
-  tenants: TenantDefinition<TransactionHandler>[];
+  tenants: TenantConfig[];
   /**
    * How to attribute a request to a tenant. Required when more than one tenant
    * is registered; defaults to the sole tenant otherwise.
@@ -35,16 +37,21 @@ export interface TransactionLambdaOptions {
  *
  * Core owns the transport: envelope logging, tenant resolution, JSON parsing,
  * per-tenant client construction, and error containment. All business logic
- * lives in the {@link TransactionHandler} each tenant supplies.
+ * lives in the single multi-tenant {@link TransactionHandler}.
  *
  * @example
  * export const handler = createTransactionLambda({
+ *   handler: new InventoryCheckHandler({ groupMe }),
  *   tenants: [
  *     {
  *       tenantId: 'bamherndon',
  *       baseUrl: 'https://bamherndon.retail.heartland.us',
  *       getToken: () => loadToken('bamherndon'),
- *       handler: new BamTransactionHandler({ groupMe }),
+ *     },
+ *     {
+ *       tenantId: 'otherstore',
+ *       baseUrl: 'https://otherstore.retail.heartland.us',
+ *       getToken: () => loadToken('otherstore'),
  *     },
  *   ],
  *   resolveTenant: fromPathSegment(0),
@@ -57,14 +64,13 @@ export function createTransactionLambda(
 ) => Promise<APIGatewayProxyStructuredResultV2> {
   const logger = options.logger ?? new ConsoleLogger(['clutch']);
 
-  const registry = new TenantRegistry<TransactionHandler>(options.tenants, {
-    logger,
-    clientFactory: options.clientFactory,
-  });
-
   return createWebhookLambda({
     eventType: 'sales_transaction_completed',
-    registry,
+    handler: options.handler,
+    registry: new TenantRegistry(options.tenants, {
+      logger,
+      clientFactory: options.clientFactory,
+    }),
     resolveTenant: options.resolveTenant,
     logger,
     parse: parseTransactionBody,

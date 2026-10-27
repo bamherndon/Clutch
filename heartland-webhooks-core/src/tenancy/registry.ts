@@ -4,8 +4,8 @@ import {
 } from '../clients/heartland-api-client';
 import { Logger, NoopLogger } from '../logging/logger';
 import {
+  TenantConfig,
   TenantContext,
-  TenantDefinition,
   TenantId,
   UnknownTenantError,
 } from './tenant';
@@ -40,24 +40,21 @@ export interface TenantRegistryOptions {
  * A failed token load is not cached, so a transient Secrets Manager error does
  * not poison the tenant until the next cold start.
  */
-export class TenantRegistry<THandler> {
-  private readonly tenants = new Map<TenantId, TenantDefinition<THandler>>();
+export class TenantRegistry {
+  private readonly tenants = new Map<TenantId, TenantConfig>();
   private readonly contexts = new Map<TenantId, Promise<TenantContext>>();
   private readonly logger: Logger;
   private readonly clientFactory: HeartlandClientFactory;
 
-  constructor(
-    definitions: TenantDefinition<THandler>[],
-    options: TenantRegistryOptions = {}
-  ) {
+  constructor(tenants: TenantConfig[], options: TenantRegistryOptions = {}) {
     this.logger = options.logger ?? new NoopLogger();
     this.clientFactory = options.clientFactory ?? defaultClientFactory;
 
-    for (const definition of definitions) {
-      if (this.tenants.has(definition.tenantId)) {
-        throw new Error(`Duplicate tenantId "${definition.tenantId}"`);
+    for (const tenant of tenants) {
+      if (this.tenants.has(tenant.tenantId)) {
+        throw new Error(`Duplicate tenantId "${tenant.tenantId}"`);
       }
-      this.tenants.set(definition.tenantId, definition);
+      this.tenants.set(tenant.tenantId, tenant);
     }
   }
 
@@ -83,55 +80,101 @@ export class TenantRegistry<THandler> {
   }
 
   /**
-   * Resolve a tenant to its handler and context.
+   * Build (or return the cached) context for a tenant.
    *
    * @throws UnknownTenantError when `tenantId` is not registered.
    */
-  async resolve(
-    tenantId: TenantId | undefined
-  ): Promise<{ handler: THandler; context: TenantContext }> {
-    const definition = tenantId ? this.tenants.get(tenantId) : undefined;
-    if (!definition) {
-      throw new UnknownTenantError(tenantId, this.tenantIds);
+  context(tenantId: TenantId | undefined): Promise<TenantContext> {
+    const tenant = tenantId ? this.tenants.get(tenantId) : undefined;
+    if (!tenant) {
+      return Promise.reject(
+        new UnknownTenantError(tenantId, this.tenantIds)
+      );
     }
 
-    return {
-      handler: definition.handler,
-      context: await this.contextFor(definition),
-    };
-  }
-
-  private contextFor(
-    definition: TenantDefinition<THandler>
-  ): Promise<TenantContext> {
-    const cached = this.contexts.get(definition.tenantId);
+    const cached = this.contexts.get(tenant.tenantId);
     if (cached) {
       return cached;
     }
 
-    const logger = this.logger.child(definition.tenantId);
-    const pending = definition
-      .getToken()
-      .then((token) => {
-        if (!token) {
-          throw new Error(
-            `Tenant "${definition.tenantId}" resolved an empty Heartland token`
-          );
-        }
-        return {
-          tenantId: definition.tenantId,
-          baseUrl: definition.baseUrl,
-          heartland: this.clientFactory(definition.baseUrl, token, logger),
-          logger,
-        };
-      })
-      .catch((err) => {
+    const logger = this.logger.child(tenant.tenantId);
+    const pending = this.buildContext(tenant, logger).catch(
+      (err: unknown) => {
         // Do not cache failures: retry on the next invocation.
-        this.contexts.delete(definition.tenantId);
+        this.contexts.delete(tenant.tenantId);
         throw err;
-      });
+      }
+    );
 
-    this.contexts.set(definition.tenantId, pending);
+    this.contexts.set(tenant.tenantId, pending);
     return pending;
   }
+
+  private async buildContext(
+    tenant: TenantConfig,
+    logger: Logger
+  ): Promise<TenantContext> {
+    // Note the client is assigned, never awaited: `unavailableClient` is a
+    // Proxy, and awaiting a Proxy would consult it for `then`.
+    const heartland = tenant.getToken
+      ? this.clientFactory(
+          tenant.baseUrl,
+          await this.loadToken(tenant),
+          logger
+        )
+      : unavailableClient(tenant.tenantId);
+
+    return {
+      tenantId: tenant.tenantId,
+      baseUrl: tenant.baseUrl,
+      heartland,
+      logger,
+    };
+  }
+
+  private async loadToken(tenant: TenantConfig): Promise<string> {
+    const token = await tenant.getToken?.();
+    if (!token) {
+      throw new Error(
+        `Tenant "${tenant.tenantId}" resolved an empty Heartland token`
+      );
+    }
+    return token;
+  }
+}
+
+/**
+ * Properties a Proxy must not answer, or it becomes indistinguishable from a
+ * promise and `await` will try to resolve it.
+ */
+const THENABLE_PROPERTIES = new Set(['then', 'catch', 'finally']);
+
+/**
+ * Stand-in for a tenant configured without `getToken`.
+ *
+ * Calling Heartland is optional, but failing silently is not: every method
+ * rejects naming the tenant and the method, so the misconfiguration is obvious
+ * from one log line rather than surfacing later as a confusing auth error.
+ */
+function unavailableClient(tenantId: TenantId): HeartlandApiClient {
+  return new Proxy({} as HeartlandApiClient, {
+    get(_target, property) {
+      // Stay non-thenable and non-exotic so this object cannot be mistaken for
+      // a promise and survives inspection by loggers and test matchers.
+      if (
+        typeof property !== 'string' ||
+        THENABLE_PROPERTIES.has(property)
+      ) {
+        return undefined;
+      }
+
+      return () =>
+        Promise.reject(
+          new Error(
+            `Tenant "${tenantId}" has no getToken configured, so ` +
+              `${property}() cannot call the Heartland API`
+          )
+        );
+    },
+  });
 }

@@ -4,12 +4,13 @@ import { createItemLambda } from '../../src/lambda/create-item-lambda';
 import { NoopLogger } from '../../src/logging/logger';
 import { HeartlandItemCreatedPayload } from '../../src/model/item';
 import { fromHeader } from '../../src/tenancy/resolver';
-import { TenantContext, TenantDefinition } from '../../src/tenancy/tenant';
+import { TenantConfig, TenantContext } from '../../src/tenancy/tenant';
 import { bodyOf, makeEvent } from '../helpers/event';
 
 const fakeClient = {} as HeartlandApiClient;
 const clientFactory = () => fakeClient;
 
+/** One multi-tenant item handler, recording the context of each call. */
 class RecordingItemHandler implements ItemHandler {
   readonly calls: Array<{
     item: HeartlandItemCreatedPayload;
@@ -17,7 +18,7 @@ class RecordingItemHandler implements ItemHandler {
   }> = [];
 
   constructor(
-    readonly name: string,
+    readonly name = 'recording-items',
     private readonly outcome: WebhookOutcome | Error | undefined = undefined
   ) {}
 
@@ -31,17 +32,17 @@ class RecordingItemHandler implements ItemHandler {
     }
     return this.outcome;
   }
+
+  get tenantIds(): string[] {
+    return this.calls.map((call) => call.context.tenantId);
+  }
 }
 
-function tenantFor(
-  tenantId: string,
-  handler: ItemHandler
-): TenantDefinition<ItemHandler> {
+function tenant(tenantId: string): TenantConfig {
   return {
     tenantId,
     baseUrl: `https://${tenantId}.retail.heartland.us`,
     getToken: async () => `${tenantId}-token`,
-    handler,
   };
 }
 
@@ -56,12 +57,11 @@ const itemBody = JSON.stringify({
 });
 
 describe('createItemLambda', () => {
-  it('routes by header and injects the tenant context', async () => {
-    const herndon = new RecordingItemHandler('herndon-items');
-    const other = new RecordingItemHandler('other-items');
-
+  it('routes by header to one shared handler, with per-tenant contexts', async () => {
+    const handler = new RecordingItemHandler();
     const lambda = createItemLambda({
-      tenants: [tenantFor('bamherndon', herndon), tenantFor('otherstore', other)],
+      handler,
+      tenants: [tenant('bamherndon'), tenant('otherstore')],
       resolveTenant: fromHeader('x-clutch-tenant'),
       logger: new NoopLogger(),
       clientFactory,
@@ -75,19 +75,24 @@ describe('createItemLambda', () => {
         })
       )
     );
+    await lambda(
+      makeEvent({
+        headers: { 'x-clutch-tenant': 'bamherndon' },
+        body: itemBody,
+      })
+    );
 
     expect(body.status).toBe('ok');
     expect(body.tenantId).toBe('otherstore');
-    expect(herndon.calls).toHaveLength(0);
-    expect(other.calls).toHaveLength(1);
-    expect(other.calls[0].context.tenantId).toBe('otherstore');
-    expect(other.calls[0].context.heartland).toBe(fakeClient);
+    expect(handler.tenantIds).toEqual(['otherstore', 'bamherndon']);
+    expect(handler.calls[0].context.heartland).toBe(fakeClient);
   });
 
   it('hands the handler a normalized, camelCased payload', async () => {
-    const handler = new RecordingItemHandler('items');
+    const handler = new RecordingItemHandler();
     const lambda = createItemLambda({
-      tenants: [tenantFor('a', handler)],
+      handler,
+      tenants: [tenant('a')],
       logger: new NoopLogger(),
       clientFactory,
     });
@@ -103,7 +108,8 @@ describe('createItemLambda', () => {
 
   it('describes the item in the response body', async () => {
     const lambda = createItemLambda({
-      tenants: [tenantFor('a', new RecordingItemHandler('items'))],
+      handler: new RecordingItemHandler(),
+      tenants: [tenant('a')],
       logger: new NoopLogger(),
       clientFactory,
     });
@@ -115,12 +121,12 @@ describe('createItemLambda', () => {
   });
 
   it('contains a thrown handler error', async () => {
-    const handler = new RecordingItemHandler(
-      'items',
-      new Error('bricklink unreachable')
-    );
     const lambda = createItemLambda({
-      tenants: [tenantFor('a', handler)],
+      handler: new RecordingItemHandler(
+        'items',
+        new Error('bricklink unreachable')
+      ),
+      tenants: [tenant('a')],
       logger: new NoopLogger(),
       clientFactory,
     });
@@ -134,7 +140,8 @@ describe('createItemLambda', () => {
 
   it('reports an unparseable body', async () => {
     const lambda = createItemLambda({
-      tenants: [tenantFor('a', new RecordingItemHandler('items'))],
+      handler: new RecordingItemHandler(),
+      tenants: [tenant('a')],
       logger: new NoopLogger(),
       clientFactory,
     });
@@ -142,5 +149,22 @@ describe('createItemLambda', () => {
     const body = bodyOf(await lambda(makeEvent({ body: '{nope' })));
     expect(body.status).toBe('error');
     expect(body.reason).toContain('could not parse body');
+  });
+
+  it('serves a tenant configured without getToken until Heartland is called', async () => {
+    const handler = new RecordingItemHandler();
+    const lambda = createItemLambda({
+      handler,
+      tenants: [{ tenantId: 'a', baseUrl: 'https://a.retail.heartland.us' }],
+      logger: new NoopLogger(),
+      clientFactory,
+    });
+
+    const body = bodyOf(await lambda(makeEvent({ body: itemBody })));
+    expect(body.status).toBe('ok');
+
+    await expect(
+      handler.calls[0].context.heartland.getInventoryItem(1)
+    ).rejects.toThrow('Tenant "a" has no getToken configured');
   });
 });

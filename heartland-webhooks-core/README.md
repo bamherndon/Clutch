@@ -6,8 +6,8 @@ that as a `TransactionHandler` or `ItemHandler`.
 
 ## The contract
 
-A caller supplies one `TenantDefinition` per Heartland instance and a way to tell them
-apart:
+A caller supplies **one multi-tenant handler** plus the `TenantConfig` of every Heartland
+instance it serves, and a way to tell those instances apart:
 
 ```ts
 import {
@@ -16,34 +16,39 @@ import {
 } from 'heartland-webhooks-core';
 
 export const handler = createTransactionLambda({
+  handler: new InventoryCheckHandler({ groupMe }),
   tenants: [
     {
       tenantId: 'bamherndon',
       baseUrl: 'https://bamherndon.retail.heartland.us',
       getToken: () => loadHeartlandToken('bamherndon'),
-      handler: new BamHerndonTransactionHandler({ groupMe }),
     },
     {
       tenantId: 'otherstore',
       baseUrl: 'https://otherstore.retail.heartland.us',
       getToken: () => loadHeartlandToken('otherstore'),
-      handler: new OtherStoreTransactionHandler(),
     },
   ],
   resolveTenant: fromPathSegment(0),
 });
 ```
 
+`tenants` is **configuration only** — it carries no business logic. The one handler
+instance serves every tenant and is told which one it is working for on each invocation,
+via `TenantContext`.
+
 Register each tenant's webhook in Heartland against its own path
 (`https://<fn-url>/bamherndon/transaction`) and `fromPathSegment(0)` routes it.
 
 With exactly one tenant registered, `resolveTenant` may be omitted — core defaults to the
-sole tenant. With more than one it is required, and construction throws if it is missing.
+sole tenant. With more than one it is required, and construction throws if it is missing,
+so a wiring mistake fails at cold start rather than on a live webhook.
 
-## Writing a plugin
+## Writing a handler
 
-Implement `TransactionHandler` or `ItemHandler`. Take everything tenant-varying from the
-`TenantContext` argument, never from `process.env`:
+Implement `TransactionHandler` or `ItemHandler`. Because a single instance serves every
+tenant, a handler must hold **no per-tenant state**: take everything tenant-varying from
+the `TenantContext` argument, never from constructor state or `process.env`.
 
 ```ts
 import {
@@ -72,7 +77,11 @@ export class InventoryCheckHandler implements TransactionHandler {
 }
 ```
 
-- `supports` is optional; omitting it means "handles everything".
+Dependencies that are the same for every tenant (a shared HTTP client, a feature flag) can
+go in the constructor. Anything that differs per store comes from the context.
+
+- `supports` is optional; omitting it means "handles everything". It runs *before* the
+  tenant context is built, so an unsupported event costs no secret load.
 - Returning nothing means success. Returning `{ ok: false, details }` reports a business
   failure, and `details` is echoed into the response body.
 - Throwing is caught, logged, and reported as `status: "error"`.
@@ -105,17 +114,31 @@ tenants only pays for the ones receiving traffic. A failed load is *not* cached 
 transient Secrets Manager error retries on the next invocation instead of poisoning the
 tenant until the next cold start.
 
+### What the token is for
+
+Handlers never see the token. It exists solely so core can build the authenticated
+`HeartlandApiClient` it exposes as `context.heartland`, which is how a handler calls
+Heartland back (`getTicketLines`, `updateInventoryItem`, …). Core owns that construction so
+each handler does not reimplement auth and token caching.
+
+`getToken` is therefore **optional**. Omit it for a tenant whose handler only reads the
+webhook payload and never calls Heartland back, and no secret is ever fetched for that
+tenant. Should something call `context.heartland` anyway, every method rejects with a
+message naming the tenant and the method, so the misconfiguration is obvious from one log
+line instead of surfacing later as a confusing auth error.
+
 ## API
 
 ### Lambda factories
 - `createTransactionLambda(options)` — `sales_transaction_completed` entrypoint
 - `createItemLambda(options)` — `item_created` entrypoint
 
-### Plugin contract
+### Handler contract
 - `TransactionHandler`, `ItemHandler`, `WebhookOutcome`
 
 ### Tenancy
-- `TenantDefinition`, `TenantContext`, `TenantId`, `UnknownTenantError`
+- `TenantConfig` (what a deployment declares), `TenantContext` (what a handler receives),
+  `TenantId`, `UnknownTenantError`
 - `TenantRegistry` — holds tenants, builds and memoizes their contexts
 - Resolvers: `fromPathSegment`, `fromPathParameter`, `fromHeader`, `fromQueryString`,
   `fixedTenant`, `firstOf`
@@ -158,6 +181,7 @@ substitute a fake `HeartlandApiClient` without touching the network:
 
 ```ts
 const lambda = createTransactionLambda({
+  handler: new MyHandler(),
   tenants: [myTenant],
   logger: new NoopLogger(),
   clientFactory: () => fakeHeartlandClient,

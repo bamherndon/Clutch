@@ -7,19 +7,22 @@ import { createTransactionLambda } from '../../src/lambda/create-transaction-lam
 import { NoopLogger } from '../../src/logging/logger';
 import { HeartlandTransaction } from '../../src/model/transaction';
 import { fromPathSegment } from '../../src/tenancy/resolver';
-import { TenantContext, TenantDefinition } from '../../src/tenancy/tenant';
+import { TenantConfig, TenantContext } from '../../src/tenancy/tenant';
 import { bodyOf, makeEvent } from '../helpers/event';
 
 const fakeClient = {} as HeartlandApiClient;
 const clientFactory = () => fakeClient;
 
-/** Records what it was handed so tests can assert on the injected context. */
+/**
+ * One multi-tenant handler. It records every call so tests can assert which
+ * tenant context each invocation received.
+ */
 class RecordingHandler implements TransactionHandler {
   readonly calls: Array<{ tx: HeartlandTransaction; context: TenantContext }> =
     [];
 
   constructor(
-    readonly name: string,
+    readonly name = 'recording',
     private readonly outcome: WebhookOutcome | Error | undefined = undefined,
     private readonly supported = true
   ) {}
@@ -38,27 +41,30 @@ class RecordingHandler implements TransactionHandler {
     }
     return this.outcome;
   }
+
+  /** The tenant ids this handler was invoked for, in order. */
+  get tenantIds(): string[] {
+    return this.calls.map((call) => call.context.tenantId);
+  }
 }
 
-function tenantFor(
-  tenantId: string,
-  handler: TransactionHandler
-): TenantDefinition<TransactionHandler> {
+function tenant(tenantId: string): TenantConfig {
   return {
     tenantId,
     baseUrl: `https://${tenantId}.retail.heartland.us`,
     getToken: async () => `${tenantId}-token`,
-    handler,
   };
 }
 
 const saleBody = JSON.stringify({ id: 77, type: 'Ticket', total: 25 });
 
 function lambdaFor(
-  tenants: TenantDefinition<TransactionHandler>[],
+  handler: TransactionHandler,
+  tenants: TenantConfig[],
   resolveTenant = fromPathSegment(0)
 ) {
   return createTransactionLambda({
+    handler,
     tenants,
     resolveTenant,
     logger: new NoopLogger(),
@@ -69,17 +75,19 @@ function lambdaFor(
 describe('createTransactionLambda — construction', () => {
   it('rejects an empty tenant list', () => {
     expect(() =>
-      createTransactionLambda({ tenants: [], logger: new NoopLogger() })
+      createTransactionLambda({
+        handler: new RecordingHandler(),
+        tenants: [],
+        logger: new NoopLogger(),
+      })
     ).toThrow('no tenants registered');
   });
 
   it('requires a resolver when more than one tenant is registered', () => {
     expect(() =>
       createTransactionLambda({
-        tenants: [
-          tenantFor('a', new RecordingHandler('a')),
-          tenantFor('b', new RecordingHandler('b')),
-        ],
+        handler: new RecordingHandler(),
+        tenants: [tenant('a'), tenant('b')],
         logger: new NoopLogger(),
         clientFactory,
       })
@@ -87,9 +95,10 @@ describe('createTransactionLambda — construction', () => {
   });
 
   it('defaults to the sole tenant when only one is registered', async () => {
-    const handler = new RecordingHandler('solo');
+    const handler = new RecordingHandler();
     const lambda = createTransactionLambda({
-      tenants: [tenantFor('solo', handler)],
+      handler,
+      tenants: [tenant('solo')],
       logger: new NoopLogger(),
       clientFactory,
     });
@@ -97,58 +106,65 @@ describe('createTransactionLambda — construction', () => {
     const body = bodyOf(await lambda(makeEvent({ body: saleBody })));
     expect(body.status).toBe('ok');
     expect(body.tenantId).toBe('solo');
-    expect(handler.calls).toHaveLength(1);
+    expect(handler.tenantIds).toEqual(['solo']);
   });
 });
 
-describe('createTransactionLambda — tenant routing', () => {
-  it('routes each request to the matching tenant handler', async () => {
-    const herndon = new RecordingHandler('herndon-checks');
-    const other = new RecordingHandler('other-checks');
-    const lambda = lambdaFor([
-      tenantFor('bamherndon', herndon),
-      tenantFor('otherstore', other),
+describe('createTransactionLambda — one handler, many tenants', () => {
+  it('invokes the same handler instance for every tenant', async () => {
+    const handler = new RecordingHandler();
+    const lambda = lambdaFor(handler, [
+      tenant('bamherndon'),
+      tenant('otherstore'),
+      tenant('thirdstore'),
     ]);
 
-    await lambda(
-      makeEvent({ rawPath: '/bamherndon/transaction', body: saleBody })
-    );
-    await lambda(
-      makeEvent({ rawPath: '/otherstore/transaction', body: saleBody })
-    );
-    await lambda(
-      makeEvent({ rawPath: '/otherstore/transaction', body: saleBody })
-    );
+    await lambda(makeEvent({ rawPath: '/bamherndon', body: saleBody }));
+    await lambda(makeEvent({ rawPath: '/otherstore', body: saleBody }));
+    await lambda(makeEvent({ rawPath: '/thirdstore', body: saleBody }));
+    await lambda(makeEvent({ rawPath: '/bamherndon', body: saleBody }));
 
-    expect(herndon.calls).toHaveLength(1);
-    expect(other.calls).toHaveLength(2);
+    expect(handler.tenantIds).toEqual([
+      'bamherndon',
+      'otherstore',
+      'thirdstore',
+      'bamherndon',
+    ]);
   });
 
-  it('gives each handler its own tenant context', async () => {
-    const herndon = new RecordingHandler('herndon-checks');
-    const other = new RecordingHandler('other-checks');
-    const lambda = lambdaFor([
-      tenantFor('bamherndon', herndon),
-      tenantFor('otherstore', other),
+  it('gives each invocation the calling tenant’s context', async () => {
+    const handler = new RecordingHandler();
+    const lambda = lambdaFor(handler, [
+      tenant('bamherndon'),
+      tenant('otherstore'),
     ]);
 
     await lambda(makeEvent({ rawPath: '/bamherndon', body: saleBody }));
     await lambda(makeEvent({ rawPath: '/otherstore', body: saleBody }));
 
-    expect(herndon.calls[0].context.tenantId).toBe('bamherndon');
-    expect(herndon.calls[0].context.baseUrl).toBe(
+    expect(handler.calls[0].context.baseUrl).toBe(
       'https://bamherndon.retail.heartland.us'
     );
-    expect(other.calls[0].context.tenantId).toBe('otherstore');
-    expect(other.calls[0].context.heartland).toBe(fakeClient);
+    expect(handler.calls[1].context.baseUrl).toBe(
+      'https://otherstore.retail.heartland.us'
+    );
+    // Distinct contexts, not a shared mutable one.
+    expect(handler.calls[0].context).not.toBe(handler.calls[1].context);
   });
 
-  it('reports an unknown tenant without invoking any handler', async () => {
-    const handler = new RecordingHandler('a');
-    const lambda = lambdaFor([
-      tenantFor('a', handler),
-      tenantFor('b', new RecordingHandler('b')),
-    ]);
+  it('reuses one context per tenant across requests', async () => {
+    const handler = new RecordingHandler();
+    const lambda = lambdaFor(handler, [tenant('a'), tenant('b')]);
+
+    await lambda(makeEvent({ rawPath: '/a', body: saleBody }));
+    await lambda(makeEvent({ rawPath: '/a', body: saleBody }));
+
+    expect(handler.calls[0].context).toBe(handler.calls[1].context);
+  });
+
+  it('reports an unknown tenant without invoking the handler', async () => {
+    const handler = new RecordingHandler();
+    const lambda = lambdaFor(handler, [tenant('a'), tenant('b')]);
 
     const result = await lambda(
       makeEvent({ rawPath: '/nosuchtenant', body: saleBody })
@@ -163,12 +179,14 @@ describe('createTransactionLambda — tenant routing', () => {
   });
 
   it('reports an unresolvable tenant', async () => {
-    const lambda = lambdaFor([
-      tenantFor('a', new RecordingHandler('a')),
-      tenantFor('b', new RecordingHandler('b')),
+    const lambda = lambdaFor(new RecordingHandler(), [
+      tenant('a'),
+      tenant('b'),
     ]);
 
-    const body = bodyOf(await lambda(makeEvent({ rawPath: '/', body: saleBody })));
+    const body = bodyOf(
+      await lambda(makeEvent({ rawPath: '/', body: saleBody }))
+    );
     expect(body.status).toBe('error');
     expect(body.reason).toContain('could not resolve a tenant');
   });
@@ -176,8 +194,8 @@ describe('createTransactionLambda — tenant routing', () => {
 
 describe('createTransactionLambda — request handling', () => {
   it('ignores a request with no body', async () => {
-    const handler = new RecordingHandler('a');
-    const lambda = lambdaFor([tenantFor('a', handler)]);
+    const handler = new RecordingHandler();
+    const lambda = lambdaFor(handler, [tenant('a')]);
 
     const body = bodyOf(await lambda(makeEvent({ rawPath: '/a' })));
     expect(body.status).toBe('ignored');
@@ -186,8 +204,8 @@ describe('createTransactionLambda — request handling', () => {
   });
 
   it('reports an unparseable body', async () => {
-    const handler = new RecordingHandler('a');
-    const lambda = lambdaFor([tenantFor('a', handler)]);
+    const handler = new RecordingHandler();
+    const lambda = lambdaFor(handler, [tenant('a')]);
 
     const body = bodyOf(
       await lambda(makeEvent({ rawPath: '/a', body: '{broken' }))
@@ -198,36 +216,46 @@ describe('createTransactionLambda — request handling', () => {
   });
 
   it('reports a failed tenant initialization', async () => {
-    const lambda = lambdaFor([
+    const lambda = lambdaFor(new RecordingHandler(), [
       {
         tenantId: 'a',
         baseUrl: 'https://a.retail.heartland.us',
         getToken: async () => {
           throw new Error('secret unavailable');
         },
-        handler: new RecordingHandler('a'),
       },
     ]);
 
-    const body = bodyOf(await lambda(makeEvent({ rawPath: '/a', body: saleBody })));
+    const body = bodyOf(
+      await lambda(makeEvent({ rawPath: '/a', body: saleBody }))
+    );
     expect(body.status).toBe('error');
     expect(body.reason).toContain('tenant initialization failed');
     expect(body.reason).toContain('secret unavailable');
   });
 
-  it('skips a handler that does not support the event', async () => {
+  it('skips an unsupported event without loading the tenant token', async () => {
+    const getToken = jest.fn(async () => 'token');
     const handler = new RecordingHandler('a', undefined, false);
-    const lambda = lambdaFor([tenantFor('a', handler)]);
+    const lambda = lambdaFor(handler, [
+      { tenantId: 'a', baseUrl: 'https://a.retail.heartland.us', getToken },
+    ]);
 
-    const body = bodyOf(await lambda(makeEvent({ rawPath: '/a', body: saleBody })));
+    const body = bodyOf(
+      await lambda(makeEvent({ rawPath: '/a', body: saleBody }))
+    );
     expect(body.status).toBe('ignored');
     expect(body.reason).toBe('handler does not support this event');
     expect(handler.calls).toHaveLength(0);
+    expect(getToken).not.toHaveBeenCalled();
   });
 
   it('contains a thrown handler error as a 200 with status error', async () => {
-    const handler = new RecordingHandler('a', new Error('strategy blew up'));
-    const lambda = lambdaFor([tenantFor('a', handler)]);
+    const handler = new RecordingHandler(
+      'inventory-checks',
+      new Error('strategy blew up')
+    );
+    const lambda = lambdaFor(handler, [tenant('a')]);
 
     const result = await lambda(makeEvent({ rawPath: '/a', body: saleBody }));
     const body = bodyOf(result);
@@ -235,7 +263,7 @@ describe('createTransactionLambda — request handling', () => {
     expect(result.statusCode).toBe(200);
     expect(body.status).toBe('error');
     expect(body.reason).toContain('strategy blew up');
-    expect(body.handler).toBe('a');
+    expect(body.handler).toBe('inventory-checks');
   });
 
   it('echoes the handler outcome and details', async () => {
@@ -243,9 +271,11 @@ describe('createTransactionLambda — request handling', () => {
       ok: false,
       details: { failedChecks: ['inventory-non-negative'] },
     });
-    const lambda = lambdaFor([tenantFor('a', handler)]);
+    const lambda = lambdaFor(handler, [tenant('a')]);
 
-    const body = bodyOf(await lambda(makeEvent({ rawPath: '/a', body: saleBody })));
+    const body = bodyOf(
+      await lambda(makeEvent({ rawPath: '/a', body: saleBody }))
+    );
     expect(body.status).toBe('error');
     expect(body.ok).toBe(false);
     expect(body.handler).toBe('inventory-checks');
@@ -255,10 +285,11 @@ describe('createTransactionLambda — request handling', () => {
   });
 
   it('treats a void return as success and describes the transaction', async () => {
-    const handler = new RecordingHandler('a');
-    const lambda = lambdaFor([tenantFor('a', handler)]);
+    const lambda = lambdaFor(new RecordingHandler(), [tenant('a')]);
 
-    const body = bodyOf(await lambda(makeEvent({ rawPath: '/a', body: saleBody })));
+    const body = bodyOf(
+      await lambda(makeEvent({ rawPath: '/a', body: saleBody }))
+    );
     expect(body.status).toBe('ok');
     expect(body.ok).toBe(true);
     expect(body.transactionId).toBe(77);
@@ -267,8 +298,8 @@ describe('createTransactionLambda — request handling', () => {
   });
 
   it('passes the parsed transaction through to the handler', async () => {
-    const handler = new RecordingHandler('a');
-    const lambda = lambdaFor([tenantFor('a', handler)]);
+    const handler = new RecordingHandler();
+    const lambda = lambdaFor(handler, [tenant('a')]);
 
     await lambda(
       makeEvent({

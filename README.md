@@ -3,7 +3,7 @@
 Multi-tenant operational automation for Heartland Retail.
 
 Clutch separates the **transport** of Heartland webhooks from the **business logic** that
-reacts to them. Transport is a reusable package; business logic is a per-tenant plugin
+reacts to them. Transport is a reusable package; business logic is a multi-tenant handler
 that the calling module injects at Lambda initialization.
 
 ## Why this exists
@@ -18,6 +18,10 @@ become structural:
    read from `process.env` deep inside handlers and strategies, so a single deployment
    could only ever serve one store.
 
+A third followed from the second: because configuration was ambient, a handler could not be
+written once and reused across stores. Clutch makes handlers multi-tenant by construction —
+tenancy arrives as an argument, so there is nowhere for per-store state to hide.
+
 Clutch fixes both: `heartland-webhooks-core` owns the transport and knows nothing about any
 particular store, and every tenant-varying value arrives through a `TenantContext` instead
 of the environment.
@@ -27,6 +31,7 @@ of the environment.
 | Package | Purpose |
 |---|---|
 | [`heartland-webhooks-core`](./heartland-webhooks-core) | Reusable, tenant-agnostic webhook receiving, parsing, tenant routing, and the Heartland REST client |
+| [`design`](./design) | The design record: architecture, multi-tenancy, the webhook lifecycle, conventions, ADRs, and known gaps. Prose only — nothing to build |
 
 ## Architecture
 
@@ -42,20 +47,28 @@ Heartland (tenant C) ─┘           │
             │  2. resolve tenant  (TenantResolver)      │
             │  3. parse body      (→ typed payload)     │
             │  4. build context   (TenantRegistry)      │
-            │  5. invoke plugin   (contain failures)    │
+            │  5. invoke handler  (contain failures)    │
             │  6. shape response                        │
             └───────────────────┬───────────────────────┘
-                                │ TransactionHandler / ItemHandler
+                                │ TenantContext
                                 ▼
-                    tenant-specific business logic
-                    (inventory checks, image sourcing,
-                     GroupMe alerts, …)
+                 one multi-tenant TransactionHandler
+                      / ItemHandler — business logic
+                   (inventory checks, image sourcing,
+                    GroupMe alerts, …)
 ```
 
-A single deployment serves many tenants. Core resolves which Heartland instance a request
-came from, then builds and memoizes that tenant's `HeartlandApiClient`. Tokens load lazily
-on first use, so a deployment with fifty tenants does not fetch fifty secrets at cold
-start — only the tenants that actually receive traffic.
+A single deployment serves many tenants, and **a single handler instance serves them all**.
+Core resolves which Heartland instance a request came from and hands the handler that
+tenant's `TenantContext` — identity, base URL, logger, and an authenticated
+`HeartlandApiClient`. The handler stays stateless with respect to tenancy; nothing about a
+store is baked into it at construction.
+
+Tokens load lazily on a tenant's first request and are memoized per process, so a
+deployment with fifty tenants does not fetch fifty secrets at cold start — only the tenants
+that actually receive traffic. Credentials exist purely so core can build that client;
+handlers never see a token, and a tenant whose handler never calls Heartland back needs no
+credentials at all.
 
 ## Development
 
