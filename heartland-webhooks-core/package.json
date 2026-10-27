@@ -1,0 +1,32 @@
+{
+  "name": "heartland-webhooks-core",
+  "version": "0.1.0",
+  "description": "Reusable, tenant-agnostic Heartland Retail webhook receiving, parsing, and API client code",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "lint": "npx eslint . --ext .ts,.js",
+    "lint:fix": "npx eslint . --ext .ts,.js --fix",
+    "build": "npm run lint && npm test && tsc",
+    "test": "jest --coverage",
+    "test:coverage": "jest --coverage"
+  },
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/aws-lambda": "^8.10.134",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^15.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.0"
+  }
+}
