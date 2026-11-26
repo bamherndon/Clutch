@@ -71,9 +71,12 @@ Three things this requires that no single event carries:
    every item can be — though the BAM custom fields carry much of what that
    translation needs ([ADR-0005](adr/0005-assume-bam-item-schema.md)).
 3. **Reconciliation.** Events are lossy — one missed webhook leaves a channel
-   permanently wrong. Replication therefore needs a periodic sweep that compares
-   state and corrects drift, not just an event handler. Scheduled work is a
-   first-class trigger for this reason, not an afterthought.
+   permanently wrong, and a throttled or disabled endpoint can lose a whole
+   window of them with nothing recording the gap. Replication therefore needs a
+   periodic sweep that compares state and corrects drift, plus a way to replay a
+   known-missed window — not just an event handler. Scheduled work is a
+   first-class trigger for this reason, not an afterthought. See
+   [05 — Open questions](05-open-questions.md).
 
 ## Tenancy multiplies across systems
 

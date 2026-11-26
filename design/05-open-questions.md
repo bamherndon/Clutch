@@ -4,107 +4,144 @@ System-level gaps: decisions not yet made that cross module boundaries. Gaps
 inside a single module live in that module's own record — core's are in
 [`heartland-webhooks-core/design/06-open-questions.md`](../heartland-webhooks-core/design/06-open-questions.md).
 
-When one of these is settled it becomes an [ADR](adr/) and the entry is deleted.
+Every entry names the issue that resolves it, so an open question is never just
+a note — it is work someone can pick up. When one is settled it becomes an
+[ADR](adr/) and the entry here is deleted. Five were settled on 2026-11-26 —
+see [Settled](#settled) at the end.
 
 Ordered by how much they block.
 
-## 1. Clutch has no persistent state, and replication needs some
+| # | Question | Issue |
+| --- | --- | --- |
+| 1 | Operational recovery has no design and no home | [#21](https://github.com/bamherndon/Clutch/issues/21) |
+| 2 | Idempotency is required and nothing enforces it | [#23](https://github.com/bamherndon/Clutch/issues/23) |
+| 3 | What "in sync" means, per channel | [#24](https://github.com/bamherndon/Clutch/issues/24) |
+| 4 | Replay of a valid trigger | [#12](https://github.com/bamherndon/Clutch/issues/12) |
+| 5 | Capacity is shared, and unmeasured | [#22](https://github.com/bamherndon/Clutch/issues/22) |
 
-A Heartland item has to map to *our listing* of it on each channel — a BrickLink
-lot, an eBay listing — per store, since each store lists separately. Nothing in
-Clutch stores that mapping. Everything so far is stateless by design: an event
-arrives, an action is taken, nothing is remembered.
+## 1. Operational recovery has no design and no home
 
-Catalog identity is a separate and easier question: `bricklinkId` is a
-BAM-mandated custom field, so *which product this is* is likely already in the
-data ([ADR-0005](adr/0005-assume-bam-item-schema.md)). What is missing is
-*which of our listings represents it*.
+Every recovery path is cron-driven or operator-driven, none fit the webhook
+lifecycle, and none have anywhere to live:
 
-This blocks the BrickLink connector, so it is the next real decision.
+- **The reconciliation sweep** — compare Heartland to each channel, correct
+  drift. [01 — Ecosystem](01-ecosystem.md#inventory-replication) says
+  event-driven replication needs one; nothing says what it compares, how often,
+  what it may change unattended, or what it does when the two disagree in a way
+  that is not a simple overwrite.
+- **Missed-window replay** — a throttled or disabled endpoint loses events with
+  nothing recording the gap, because dead-letter queues only hold what we
+  received. Scoped in [issue #20](https://github.com/bamherndon/Clutch/issues/20);
+  needs a home and a trigger.
+- **DLQ drains** — uniform for the core DLQ (re-fetch), but **per handler** for
+  the handler DLQ, since handlers own their recovery
+  ([ADR-0008](adr/0008-handlers-own-state-idempotency-recovery.md)). The runbook
+  therefore cannot be one page of generic steps.
+- **Where the runner lives** — scheduled work reuses the tenancy layer but not
+  the webhook lifecycle: no request, nothing to attribute a tenant *from*.
+  Whether it is its own module or part of core is undecided
+  ([02 — Modules](02-modules.md#scheduled-work-has-no-home-yet)).
 
-The shape of the question, not just the storage choice:
-- **Is the mapping derivable or stored?** If a channel listing can carry the
-  Heartland item id in a field it round-trips (an SKU, a remark field), the
-  mapping is derivable and Clutch may stay stateless. That would be worth a
-  lot, and it is the first thing to check per channel. A channel that lets us
-  look up a listing by catalog id plus our own account also makes it derivable.
-- **If stored:** what owns it? A store per connector, or one shared mapping
-  table keyed by (tenant, system, heartland item id)?
-- **What else wants to be stored once it exists?** Dedup keys (item 2), sync
-  cursors, reconciliation results. A datastore introduced for mapping will be
-  asked to hold all of it, so the decision is bigger than it first looks.
+The distinction worth keeping while designing any of it: **replay is
+event-shaped and needs a time window; a sweep is state-shaped and needs none.**
+A good sweep may make replay unnecessary.
 
-## 2. No deduplication or idempotency enforcement
+Tracked for design in [issue #21](https://github.com/bamherndon/Clutch/issues/21).
+It matters more here than it would elsewhere: CloudWatch is the only diagnostic
+channel and the people who run the stores run this, so a recovery path that
+needs a specialist is the wrong design.
 
-[Invariant 5](03-invariants.md) says actions must be idempotent, and nothing
-enforces it. Each handler is responsible for its own guard, which is easy to
-forget and invisible when forgotten.
+## 2. Idempotency is required and nothing enforces it
 
-A system-level dedup — a seen-event key with a TTL — needs the storage decision
-from item 1. Tolerable in phase 1, where duplicate pushes are mostly harmless;
-not tolerable in phase 2, where a duplicated channel sale double-decrements real
-inventory.
+Handlers own it ([ADR-0008](adr/0008-handlers-own-state-idempotency-recovery.md))
+and [invariant 5](03-invariants.md) requires it, but no machinery checks it —
+while two routine paths violate it: at-least-once delivery re-runs a handler
+that failed partway through its writes, and a replayed trigger refetches a real
+record (item 4).
 
-## 3. No durable retry; a failed action is simply lost
+Deliberately not closed by building a framework guard, which would need the
+shared datastore ADR-0008 declines. What makes it survivable instead:
 
-Work happens inline in one invocation. Core answers 200 unconditionally so
-upstream endpoints are never disabled, which means the upstream system will not
-redeliver either — a transient channel API failure drops the action, and the
-channel stays wrong until a reconciliation sweep catches it.
+- Prefer naturally idempotent actions — **set** channel state to what Heartland
+  says, never **adjust** by a delta. Most of replication can be written this
+  way.
+- Each handler's design record states how it is safe under redelivery
+  ([06 — Handler responsibilities](06-handler-responsibilities.md), item 1).
 
-Options: in-process retry with backoff (cheap, belongs in each connector); a
-queue between receiving and acting (correct, and a real architectural change —
-it splits "answer the webhook" from "do the work"); or lean on reconciliation
-sweeps as the backstop and accept per-event loss.
+What remains genuinely open is whether that holds. If the same hand-rolled guard
+keeps appearing in handler after handler, the framework-level version earns its
+keep and this becomes an ADR.
 
-Coupled to item 4: if sweeps are trustworthy, losing an individual event matters
-much less.
+Tracked in [issue #23](https://github.com/bamherndon/Clutch/issues/23), which
+records the trigger to watch for and the part that is actually hard: defining
+"processed" for a handler that completed half its writes.
 
-## 4. Reconciliation is named but not designed
+## 3. What "in sync" means, per channel
 
-[01 — Ecosystem](01-ecosystem.md#inventory-replication) says event-driven
-replication drifts and needs a periodic sweep. Nothing specifies what a sweep
-compares, how often, what it is allowed to change unattended, or what it does
-when a channel and Heartland disagree in a way that is not a simple overwrite
-(a listing sold on a channel Clutch does not yet read).
+Related to item 1 but distinct: even with a sweep designed, each channel needs
+its own answer for what correct looks like. A BrickLink lot has a condition and
+a price; an eBay listing has a category and a format. Replicating a quantity is
+easy; deciding whether a *listing* is right is per channel, and nothing has
+specified it.
 
-Blocked on nothing except deciding. Worth doing before the BrickLink connector
-so sweeping is not retrofitted.
+First real answer comes with the BrickLink connector, which is also where the
+identity-mapping question gets answered now that handlers own their own state.
 
-## 5. Which module owns scheduled work
+Tracked in [issue #24](https://github.com/bamherndon/Clutch/issues/24). Note the
+dependency: the reconciliation sweep in item 1 cannot correct drift without this
+definition of what it is drifting from.
 
-Cron-driven jobs reuse the tenancy layer but not the webhook lifecycle
-([02 — Modules](02-modules.md#scheduled-work-has-no-home-yet)). Open: whether
-the runner is its own module or part of core; whether core iterates tenants or
-the job does; and how a partial failure across tenants is reported when there is
-no response body to put it in.
+## 4. Replay of a valid trigger
 
-## 6. How a context exposes more than one system
+Authentication is settled in the only way available:
+[ADR-0006](adr/0006-webhook-is-a-trigger-api-is-truth.md) stops trusting the
+payload, so a forged body cannot inject data that never happened. What it cannot
+stop is **replay** — a fabricated trigger carrying a real record id makes us
+reprocess a real record.
 
-`TenantContext` today carries exactly one system client, Heartland's, because
-that is all that exists. With three channels connected, a handler needs clients
-for several systems — but a context that eagerly exposes all of them makes every
-handler depend on every connector, and makes every deployment hold every
-credential.
+Smaller than injection, and blunted by two things: reprocessing reads current
+truth, and idempotent actions make a repeat a no-op (item 2). What remains is an
+attacker replaying valid ids at volume, which is a load problem as much as a
+correctness one — see the throttling note in ADR-0006, including the sharp edge
+that a global concurrency cap returns 429 to Heartland too.
 
-Likely shape: a lookup the handler asks for what it needs, so dependencies stay
-explicit and unused connectors stay unloaded. Undecided, and the first real test
-of [ADR-0004](adr/0004-one-module-per-system.md).
+Tracked in [issue #12](https://github.com/bamherndon/Clutch/issues/12) — the
+probe for a signing mechanism, which is what would resolve this rather than
+merely bound it. Signing would authenticate the payload and close it properly.
+It is no longer a blocker, which is the point of ADR-0006.
 
-## 7. No request authentication anywhere
+**If signing does turn out to exist:** verify it in the receiver, before
+anything else, and keep reading the record from the API anyway. The two are
+complementary — a signature says the trigger is genuine, the API read says the
+data is current — and dropping the read would also give up the id validation
+that makes an invalid trigger fail at the edge.
 
-Core trusts anything that reaches its function URL; tenant ids are routing keys,
-not credentials. That is a core-level gap, but the decision is system-level
-because every future connector that receives inbound events inherits it — and in
-phase 2 those inbound events will be channel sales that move real inventory.
+## 5. Capacity is shared, and unmeasured
 
-Settle the scheme once, here, rather than per connector.
+All tenants share one deployment's capacity, and a channel API rate limit may be
+per account or per IP. No per-tenant throttling or cost attribution exists.
 
-## 8. Per-tenant blast radius is shared
+**Decided: measure first, scale when the numbers say so.** Instrument outbound
+calls per (tenant, system, operation), plus queue depth, queue age, DLQ depths,
+and receiver 429s — then pick a lever. Tracked in
+[issue #22](https://github.com/bamherndon/Clutch/issues/22).
 
-All tenants share one deployment's concurrency, and a channel API rate limit is
-usually per account but may be per IP. No per-tenant throttling or cost
-attribution exists.
+Still open: which lever. In rough order of cost — dispatcher concurrency and
+batching, per-handler backoff, a queue per event type, a queue or deployment per
+tenant (which the tenancy design already supports).
 
-Acceptable at a handful of stores. The lever, if needed, is one deployment per
-tenant with the same code — which the tenancy design already supports.
+Partly improved already by
+[ADR-0007](adr/0007-asynchronous-processing-with-dlqs.md): a slow handler backs
+up a queue instead of holding a webhook connection open, so one store's backlog
+degrades throughput rather than availability. The shared queue does mean one
+store's flood is another store's latency.
+
+## Settled
+
+| Was | Now |
+| --- | --- |
+| No durable retry; a failed action is lost | [ADR-0007](adr/0007-asynchronous-processing-with-dlqs.md) — queue plus two DLQs |
+| No request authentication anywhere | [ADR-0006](adr/0006-webhook-is-a-trigger-api-is-truth.md) — stop trusting the payload; narrowed to item 4 |
+| Clutch has no persistent state, and replication needs some | [ADR-0008](adr/0008-handlers-own-state-idempotency-recovery.md) — each handler owns its own |
+| No deduplication or idempotency enforcement | [ADR-0008](adr/0008-handlers-own-state-idempotency-recovery.md) — handler responsibility; narrowed to item 2 |
+| How a context exposes more than one system | [ADR-0009](adr/0009-handler-specific-contexts.md) — a handler declares what it needs |
