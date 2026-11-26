@@ -192,3 +192,12 @@ const lambda = createTransactionLambda({
 npm test             # jest with coverage
 npm run build        # lint + test + tsc
 ```
+
+## Design
+
+[`design/`](./design) is this package's design record — the webhook lifecycle, the tenancy
+model, the Heartland client, the conventions to follow when adding code, and the ADRs
+behind each of them. It also lists the gaps this package knows it has.
+
+For what Clutch is as a whole — the systems it joins together, the module boundaries, and
+the invariants every module inherits — see the [top-level design record](../design).
