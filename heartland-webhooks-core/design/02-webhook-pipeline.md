@@ -266,6 +266,13 @@ respond with the outcome. Mapping that to the target:
 | `supports()` in the dispatcher | In the receiver | [#17](https://github.com/bamherndon/Clutch/issues/17) |
 | Handler takes the API record; outcome to logs | Takes parsed payload; outcome in the response | [#18](https://github.com/bamherndon/Clutch/issues/18) |
 | Queue, DLQs, visibility timeout, throttling | — | [#19](https://github.com/bamherndon/Clutch/issues/19) |
+| Receiver factory names, `accepted`/`rejected` statuses, queue types exported, per-deployable log tags | Synchronous names and shapes | [#25](https://github.com/bamherndon/Clutch/issues/25) |
+
+Two earlier issues were amended rather than superseded by this: [#8](https://github.com/bamherndon/Clutch/issues/8)
+(the timeout stands; retry budgets now split between a short one in the receiver
+and a patient one in the handler) and
+[#11](https://github.com/bamherndon/Clutch/issues/11) (the `details` cap applies
+to logs, since the response no longer carries handler output).
 
 Unchanged by all of this: tenancy ([01](01-multi-tenancy.md)), the Heartland
 client ([03](03-heartland-client.md)), and every convention in
