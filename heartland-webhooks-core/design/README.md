@@ -37,7 +37,7 @@ module.
 | [03 — Heartland client](03-heartland-client.md) | The REST surface and the HTTP layer underneath it |
 | [04 — Conventions](04-conventions.md) | Errors, logging, parsing, testing, naming |
 | [05 — Extending core](05-extending.md) | Writing a handler, adding an event type, adding an endpoint |
-| [06 — Open questions](06-open-questions.md) | Known gaps in this package |
+| [06 — Open questions](06-open-questions.md) | None at the package level — and where the ones that touch it live |
 | [ADRs](adr/) | One decision per file, with the alternatives that lost |
 
 ## Decisions
