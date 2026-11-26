@@ -51,6 +51,59 @@ Tier 3 exists because lots created by hand, before Clutch or beside it, will not
 carry a stamp. It is a heuristic and can mis-match; it should log loudly and
 never silently overwrite a lot it is not sure about.
 
+## Catalog translation
+
+`ListingPlanner`'s whole job, and now specified. Everything keys off
+`custom.sub_department` — the field the item parser already reads as
+`subDepartment`.
+
+| `sub_department` | `item.type` | `new_or_used` | `completeness` |
+| --- | --- | --- | --- |
+| New In Box | SET | `N` | `S` sealed |
+| Retired New In Box | SET | `N` | `S` sealed |
+| Certified Used Set | SET | `U` | `C` complete |
+| Used Set | SET | `U` | `C` if pre-built, else `B` incomplete |
+| Collectible Minifig | MINIFIG | `U` | — not applicable |
+| Casefig | MINIFIG | `U` | — not applicable |
+| **anything else** | — | — | **not listed** |
+
+**Match on a normalized value — trimmed and case-folded — against this table,
+and treat an unmapped value as a counted, logged skip.** Exact spelling then
+stops being load-bearing, and a sub-department nobody told us about shows up as
+a rising skip count instead of silence. Heartland's reporting API would not
+return this dimension when asked, so the spellings above come from the store
+rather than from the data; normalizing is what makes that safe.
+
+Two corrections the API forces on the rule as stated:
+
+- **`completeness` is SET-only** (values `C`, `B`, `S`). So "collectible minifig
+  and casefig are used and complete" becomes `new_or_used: U` with completeness
+  omitted — there is no field to carry "complete" for a minifig.
+- **Confirm `completeness: S` is accepted alongside `new_or_used: N`** on the
+  first create. Sealed is meaningful for a new set, but the docs describe
+  completeness as complete-or-incomplete, so this is worth proving rather than
+  assuming.
+
+### Quantity, and a thing the live data shows
+
+```
+quantity = max(0, onHand)
+```
+
+Not a defensive flourish. Pulling real inventory by department turned up
+negative on-hand in several of them — Bulk at −5899, Parties/Events at −89,
+Convenience at −9 — and the predecessor carries an
+`inventory-non-negative-strategy`, so negative stock is a known condition rather
+than a glitch.
+
+A negative quantity must never reach BrickLink. Clamp to zero, which means "not
+listed", and **count it separately from a legitimate zero** — the two look
+identical on the channel and mean very different things in the store.
+
+None of those departments list under the sub-department table above, so this is
+belt-and-braces today. It stops being belt-and-braces the moment a listable
+sub-department goes negative.
+
 ## Module split
 
 The connector owns BrickLink; the handler owns what a Heartland event means for
@@ -257,12 +310,14 @@ since a design that skips these is incomplete by definition.
 These are store-policy and data questions, not technical ones, and the design is
 blocked on them in the places noted.
 
-1. **Condition.** `new_or_used` is required on every lot, and I see no Heartland
-   custom field carrying it. Does it come from `department` / `subDepartment`,
-   from `bamCategory`, or somewhere else? `ListingPlanner` cannot be written
-   without this.
-2. **Completeness.** Used sets need `completeness` (complete / incomplete /
-   sealed). Same question — where does it live in Heartland?
+1. **What marks a used set as pre-built?** The rule is "a used set is complete
+   if it is a pre-built set, otherwise incomplete" — but is *Pre-Built Set* a
+   sub-department of its own, sitting alongside *Used Set*, or a flag on an item
+   that is already in *Used Set*? The planner needs to know which field to read.
+   This is the one thing still blocking it.
+2. **Is a casefig a MINIFIG to BrickLink?** The table assumes so. If a casefig
+   is catalogued as something else, its `item.type` is wrong and every create
+   fails.
 3. **Which fields do we own?** Quantity, certainly. Price? Description? If
    Clutch owns `unit_price`, nobody can price-adjust on BrickLink by hand
    without being overwritten. This is [#24](https://github.com/bamherndon/Clutch/issues/24).
@@ -274,8 +329,9 @@ blocked on them in the places noted.
    fail early and visibly.
 6. **Multi-location.** `GET /inventory/values` groups by item **and location**.
    Is a tenant's BrickLink stock one location's on-hand, or the sum?
-7. **Item types.** Sets and minifigs presumably, with `color_id` 0. Do we ever
-   list parts, where colour is load-bearing?
+7. **Colour.** Sets and minifigs take `color_id` 0. Confirmed by the
+   sub-department table — no parts list, so colour is never load-bearing. Flag
+   if that changes.
 
 ## Open risks
 
