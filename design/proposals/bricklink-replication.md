@@ -33,9 +33,9 @@ cheapest first:
 
 | Tier | Mechanism | Cost |
 | --- | --- | --- |
-| 1 | `MappingStore` — `(tenantId, heartlandItemId) → inventory_id` | one read |
-| 2 | Full-inventory scan, indexed by the Heartland id stamped in `remarks` | one large fetch |
-| 3 | Full-inventory scan, matched on `item.no` + `color_id` + `new_or_used` | same fetch, fuzzier |
+| 1 | `MappingStore` — `(tenantId, heartlandItemId) → inventory_id`. **Optional, default off** | one read |
+| 2 | Inventory scan, indexed by the Heartland id stamped in `remarks`. **The primary mechanism** | one fetch of stocked lots |
+| 3 | Same scan, matched on `item.no` + `color_id` + `new_or_used` | same fetch, fuzzier |
 
 **Every lot we create carries its Heartland item id in `remarks`.** That is what
 makes tier 2 possible, and it is the point of the design: the BrickLink
@@ -265,9 +265,10 @@ sequenceDiagram
             L-->>L: index by remarks stamp, then by no+color+condition
         end
         alt lot exists and qty > 0
-            R->>B: PUT /inventories/{id} (quantity, unit_price)
+            R->>B: PUT /inventories/{id} (all owned fields)
         else lot exists and qty == 0
-            R->>B: DELETE or PUT quantity 0
+            R->>B: DELETE /inventories/{id}
+            R->>L: forget(itemId)
         else not listed and qty > 0
             R->>B: POST /inventories (stamped remarks)
             R->>L: remember(itemId, inventory_id)
@@ -354,61 +355,76 @@ since a design that skips these is incomplete by definition.
 
 ## Policy decisions
 
-Four questions that are store policy rather than engineering, each with the
-recommendation the design currently assumes. Confirmed already: a casefig is a
-MINIFIG to BrickLink, so the table above stands.
+All four settled.
 
-### 1. Which fields does Clutch own?
+| # | Decision |
+| --- | --- |
+| 1 | **Heartland is the source of truth for every field.** Clutch sets `quantity`, `unit_price`, `description` and `remarks` on every write. A hand edit on BrickLink does not survive the next sync. |
+| 2 | **Zero stock deletes the lot**, and it is re-created when stock returns. The inventory is wide but sparse — most items are out of stock most of the time — so zero-quantity lots would dominate the store. |
+| 3 | **Create on first positive stock**, not on `item_created`. The `item_created` handler still does a validation-only pass: resolve `bricklink_id` against BrickLink's catalog and report a skip if it does not exist, so a bad id surfaces before a sale depends on it. |
+| 4 | **On-hand is the sum across a tenant's configured locations**, one or more, stated in configuration. Never a sum across all locations — that would publish parts-out or staging stock as sellable. |
 
-Quantity, certainly. The question is `unit_price` and `description`.
+Also settled: a casefig is a MINIFIG to BrickLink, so the translation table
+stands.
 
-If Clutch owns `unit_price`, nobody can price-adjust a lot on BrickLink by hand —
-the next sync reverts it. If Clutch does not, listings drift from Heartland
-pricing and the channel slowly stops reflecting the store.
+### What "delete on zero" changes
 
-**Recommended:** own `quantity` and `unit_price` on every write;
-`description` on create only, never overwritten; `remarks` always ours, since it
-carries the identity stamp. That makes BrickLink a true replica, consistent with
-[ADR-0001](../adr/0001-heartland-system-of-record.md) — and it means
-channel-specific pricing, if it is ever wanted, has to come from a Heartland
-price list rather than from editing BrickLink.
+It is the right call for a sparse inventory, and it moves the design in three
+ways worth stating.
 
-### 2. Zero stock — delete the lot, or set quantity to 0?
+**The hot path becomes create and delete, not update.** A wide, sparse inventory
+means most stock transitions cross zero: an item sells out and the lot goes
+away; a box is received and the lot comes back. Updates happen only between
+those. So the write the design must be most careful about is the one that is not
+naturally idempotent — `create` — and `locate()` immediately before create stops
+being a nicety.
 
-**Verify first:** whether BrickLink accepts a lot at quantity 0 or removes it
-automatically.
+**The persistent mapping store loses most of its value.** A stored
+`inventory_id` is valid only while the lot exists, and under this policy lots are
+deleted routinely — so most cached entries are stale most of the time. Two
+consequences:
 
-Deleting loses the lot and forces a re-create when stock returns: a new
-`inventory_id`, a fresh stamp, and mapping churn. Keeping it at zero preserves
-the mapping and is cheaper, at the cost of zero-quantity lots sitting in the
-store's inventory views.
+- `forget()` on every delete is mandatory, not housekeeping. A stale id pointed
+  at a deleted lot produces a 404 on update, which must be treated as
+  "not listed" and fall through to create rather than failing the item.
+- The sparse inventory makes the alternative cheap: `GET /inventories` returns
+  only *stocked* lots, which is a small fraction of the catalog. So the stamp
+  scan is a modest call, and a per-process index with a short TTL — keyed by
+  tenant — covers the warm case.
 
-**Recommended:** quantity 0 if BrickLink permits it, falling back to delete and
-`forget()` the mapping. Fewer creates means fewer chances to create a duplicate.
+**Recommendation: make `MappingStore` optional and default to off.** Resolve by
+stamp scan with a warm in-process index, and add the persistent store only if
+the stocked-lot count grows enough to make the scan hurt. That removes the only
+piece of durable state from this handler, which is the cheapest possible answer
+to [ADR-0008](../adr/0008-handlers-own-state-idempotency-recovery.md) — nothing
+to provision, nothing to lose, nothing to migrate.
 
-### 3. When does a listing get created?
+**Idempotency still holds.** Redelivery after a delete re-reads Heartland, still
+sees zero, finds no lot, does nothing. Redelivery after a create finds the lot by
+its stamp and updates it. The race that remains is a zeroing and a restocking
+message in flight together, which can briefly leave the channel wrong in either
+direction; both self-heal on the next event for that item or on the sweep.
 
-On `item_created`, or only when stock first exists?
+### The phase-1 interaction this makes concrete
 
-Creating at quantity 0 surfaces a bad `bricklink_id` immediately, which is
-worth a lot — the alternative is discovering it at the first sale. But it
-depends on question 2 allowing zero, and it fills the store with empty lots.
+Set-semantics plus Heartland-as-truth means **Clutch will actively undo
+BrickLink's own decrements.** A BrickLink buyer purchases a lot, BrickLink
+reduces its quantity, and the next sync sets it straight back to Heartland's
+figure — which still counts the sold item, because Heartland does not learn
+about a BrickLink sale until staff ring it up.
 
-**Recommended:** create only on first positive stock, and have the
-`item_created` handler do a **validation-only** pass — resolve `bricklink_id`
-against BrickLink's catalog (`GET /items/{type}/{no}`) and report a skip if it
-does not exist. That buys the early, visible failure without the empty lots.
+That is the known one-way gap ([ADR-0003](../adr/0003-one-way-now-two-way-destination.md)),
+but it is worth seeing in its concrete form: replication does not merely fail to
+prevent overselling, it can **restore** oversold quantities. Two mitigations
+until phase 2, both operational rather than technical:
 
-### 4. Which location's on-hand?
+- BrickLink sales get entered in Heartland promptly, and "promptly" now has a
+  definition: before the next sync touches that item.
+- The sweep's correction direction is Heartland → BrickLink, so a sweep will do
+  the same thing. It is not a safety net for this.
 
-`GET /api/inventory/values` groups by item **and** location. Herndon reports a
-single location, and the Heartland tooling defaults to location `100005`.
-
-**Recommended:** an explicit per-tenant location configuration rather than a
-sum. Summing is the dangerous default: it would publish stock sitting in a
-parts-out, repair, or staging location as if it were sellable. If a tenant
-genuinely sells from several locations, that is a list of location ids, stated
-rather than inferred.
+This is the strongest argument for phase 2 that the design has produced so far,
+and it belongs in the decision to go live with a BrickLink store.
 
 ## Open risks
 
