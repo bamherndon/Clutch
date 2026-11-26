@@ -37,6 +37,14 @@ module.
 | [0004](adr/0004-zero-runtime-dependencies.md) | Zero runtime dependencies |
 | [0005](adr/0005-injected-token-loading.md) | Token loading is injected, not implemented here |
 | [0006](adr/0006-parse-results-not-exceptions.md) | Parsers return results instead of throwing |
+| [0007](adr/0007-outbound-http-timeouts-and-retries.md) | Outbound HTTP: bounded timeouts, retry reads only |
+| [0008](adr/0008-reload-context-on-401.md) | Reload a tenant context on 401, rather than expiring it |
+| [0009](adr/0009-log-header-names-allowlist-values.md) | Log every header's name, but only allowlisted values |
+| [0010](adr/0010-bound-outcome-details.md) | Bound `details` in the response |
+
+ADRs 0007–0010 are **decided but not yet implemented** — they settle the design
+question; the code changes are tracked as issues. Each one says what `0.1.0`
+does today.
 
 The system-wide decision that this package exists at all —
 transport separated from business logic, handlers multi-tenant by construction —

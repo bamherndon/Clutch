@@ -42,8 +42,9 @@ This constraint applies to core only.
   wins by default. Uniform auth handling and error text fall out of that.
 - Costs, accepted knowingly:
   - `requestJson` is hand-rolled, so timeouts and retries are features we must
-    build rather than configure. Both are currently missing — open questions
-    [3 and 4](../06-open-questions.md).
+    build rather than configure. Both were missing at `0.1.0`; the policy is now
+    set by [ADR-0007](0007-outbound-http-timeouts-and-retries.md) and is ours to
+    implement.
   - No streaming, no multipart, no connection pooling beyond Node's default
     agent. None are needed for JSON APIs at webhook volumes.
 - A proposal to add a runtime dependency to core needs an ADR superseding this

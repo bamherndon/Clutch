@@ -164,6 +164,9 @@ The default logger is `new ConsoleLogger(['clutch'])` — debug suppressed. Pass
 `new ConsoleLogger(['clutch'], true)` to enable the verbose per-line tracing in
 the client.
 
-One caveat worth knowing: the envelope log includes **all** request headers.
-That is deliberate for diagnosis, but it means any future shared-secret header
-would land in CloudWatch. Flagged in [06 — Open questions](06-open-questions.md).
+One caveat worth knowing: as of `0.1.0` the envelope log includes **all**
+request headers, values and all. That is deliberate for diagnosis — nobody has
+yet confirmed what Heartland sends — but it means a future shared-secret header
+would land in CloudWatch.
+[ADR-0009](adr/0009-log-header-names-allowlist-values.md) settles it: log every
+header's name, but only allowlisted values.

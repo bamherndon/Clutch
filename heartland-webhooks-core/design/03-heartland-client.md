@@ -32,9 +32,11 @@ Design points:
 - **`Content-Length` is computed** from the serialized body, not left to chunked
   encoding, because some upstreams reject chunked POSTs.
 
-Known gaps, both in [06 — Open questions](06-open-questions.md): no timeout and
-no retry. A hung Heartland connection currently ends at the Lambda timeout, and
-a 5xx fails the webhook outright.
+Timeout and retry behaviour is settled by
+[ADR-0007](adr/0007-outbound-http-timeouts-and-retries.md): a 10s default
+timeout, retries on reads only, never on writes. As of `0.1.0` neither is
+implemented yet — a hung connection still ends at the Lambda timeout, and a 5xx
+still fails the webhook outright.
 
 ### URL helpers
 

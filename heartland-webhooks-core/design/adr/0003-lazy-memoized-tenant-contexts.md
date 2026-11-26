@@ -56,8 +56,9 @@ of a cascade of 401s from Heartland.
   `reason: "tenant initialization failed: …"` — distinguishable in logs from a
   routing error or a handler failure.
 - **No TTL.** A rotated token is not picked up until the next cold start; the
-  symptom is 401s from Heartland rather than an obvious cache problem. Tracked
-  as [open question 5](../06-open-questions.md).
+  symptom is 401s from Heartland rather than an obvious cache problem.
+  [ADR-0008](0008-reload-context-on-401.md) settles this by invalidating on a
+  401 rather than expiring on a clock — the memoization here stays as it is.
 - The `catch` that deletes the entry must stay. It looks like a redundant
   rethrow and is the whole point of the design — the source comment says so.
 
