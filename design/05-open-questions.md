@@ -70,6 +70,26 @@ when a channel and Heartland disagree in a way that is not a simple overwrite
 Blocked on nothing except deciding. Worth doing before the BrickLink connector
 so sweeping is not retrofitted.
 
+### The gap the queue does not cover
+
+Dead-letter queues hold events we *received* and failed to process. They say
+nothing about events we never received at all — and there is a reachable
+scenario for that: the receiver is throttled under a legitimate flood, or
+Heartland disables the endpoint after repeated failures
+([ADR-0006](adr/0006-webhook-is-a-trigger-api-is-truth.md)). Heartland does not
+redeliver, so that window is simply absent, and nothing in Clutch notices.
+
+That needs an operator-runnable **resynchronization** path: query Heartland for
+records changed in the missed window and replay them through the queue, so the
+work goes through exactly one code path. Tracked as an action item in
+[issue #20](https://github.com/bamherndon/Clutch/issues/20).
+
+It may converge with the sweep above — a sweep that compares Heartland to each
+channel repairs a missed-event gap without needing to know the window at all.
+The distinction worth keeping in mind while designing either: replay is
+*event-shaped* and needs a time window; a sweep is *state-shaped* and needs
+none.
+
 ## 4. Which module owns scheduled work
 
 Cron-driven jobs reuse the tenancy layer but not the webhook lifecycle
