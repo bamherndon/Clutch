@@ -67,12 +67,59 @@ never silently overwrite a lot it is not sure about.
 | Casefig | MINIFIG | `U` | — not applicable |
 | **anything else** | — | — | **not listed** |
 
+**Pre-built comes from `custom.bam_category`**, not from the sub-department.
+Confirmed against a real used set (`75317-1`):
+
+```json
+"custom": {
+  "tags": "BrickHeadz,Used Set,Pre-Built Set,add",
+  "department": "Used Sets",
+  "sub_department": "Used Set",
+  "bam_category": "Pre-Built Set",
+  "bricklink_id": "75317-1",
+  "upc": ""
+}
+```
+
+So the one conditional row reads: `sub_department` is *Used Set* **and**
+`bam_category` is *Pre-Built Set* → `C`, otherwise `B`. Note `tags` carries the
+same two facts as free text; the typed custom fields are the ones to read, not
+the tag string.
+
 **Match on a normalized value — trimmed and case-folded — against this table,
-and treat an unmapped value as a counted, logged skip.** Exact spelling then
-stops being load-bearing, and a sub-department nobody told us about shows up as
-a rising skip count instead of silence. Heartland's reporting API would not
-return this dimension when asked, so the spellings above come from the store
-rather than from the data; normalizing is what makes that safe.
+and treat an unmapped value as a counted, logged skip.** Spelling then stops
+being load-bearing, and a sub-department nobody mentioned shows up as a rising
+skip count instead of silence. Worth knowing the real values differ in number:
+the *department* is "Used Sets" while the *sub-department* is "Used Set".
+
+### `bricklink_id` is the catalog number, and it is already right
+
+`bricklink_id` on that item is `75317-1` — exactly BrickLink's `item.no` format
+for a set. It goes straight into `item.no` with no transformation, which is the
+whole reason catalog identity needs no mapping store.
+
+It also happens to equal `public_id` on this item. **Do not rely on that.** One
+item is not a convention, and if BAM's SKU and the BrickLink number diverge
+anywhere, `bricklink_id` is the field that is *meant* to carry it.
+
+### Listability preconditions, from the real record
+
+The sub-department table decides *how* to list. These decide *whether* to:
+
+| Condition | Why |
+| --- | --- |
+| `active?` is true | an inactive item should not be on sale |
+| `track_inventory?` is true | without tracking there is no on-hand figure to replicate. `BAM10000` (Bulk Loose Pieces) has it false |
+| `prompt_for_price?` is false **and** `price > 0` | a prompt-for-price item has no price to publish. `BAM10000` has `price: 0` and prompts |
+| `bricklink_id` is non-empty | nothing to list against |
+| `sub_department` maps in the table above | everything else is filtered out |
+
+**Empty string is the absent case, not `undefined`.** `upc` on that item is
+`""`, and `BAM10000`'s `custom` object omits `sub_department`, `bam_category`
+and `bricklink_id` entirely. So a field is present only if it is non-empty after
+trimming — two different shapes of missing, one check. This is
+[ADR-0005](../adr/0005-assume-bam-item-schema.md)'s "mandated does not mean
+populated" showing up in the first two items we looked at.
 
 Two corrections the API forces on the rule as stated:
 
@@ -310,11 +357,11 @@ since a design that skips these is incomplete by definition.
 These are store-policy and data questions, not technical ones, and the design is
 blocked on them in the places noted.
 
-1. **What marks a used set as pre-built?** The rule is "a used set is complete
-   if it is a pre-built set, otherwise incomplete" — but is *Pre-Built Set* a
-   sub-department of its own, sitting alongside *Used Set*, or a flag on an item
-   that is already in *Used Set*? The planner needs to know which field to read.
-   This is the one thing still blocking it.
+1. **Should `available_online?` gate listing?** It is `false` on the used set
+   above. If the store already uses that flag to mean "sell this online", it is
+   the natural switch for replication — and it would give staff per-item control
+   without touching Clutch. If it means something else, say so and I will leave
+   it out. This is the only question that could still change the planner's shape.
 2. **Is a casefig a MINIFIG to BrickLink?** The table assumes so. If a casefig
    is catalogued as something else, its `item.type` is wrong and every create
    fails.
