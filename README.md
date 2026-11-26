@@ -96,8 +96,18 @@ as above, so a green local build means a green CI run.
 
 ## Status
 
-`heartland-webhooks-core` is complete and tested. Still to come:
+`heartland-webhooks-core` is complete and tested as a synchronous transport. The
+[async rework](./design/adr/0007-asynchronous-processing-with-dlqs.md) — a receiver that
+validates a trigger against the Heartland API and enqueues the authoritative record, and a
+separate dispatcher that runs the handler off the queue — is in progress. Landed so far:
+the versioned queue-message contract and the injected `EventPublisher` seam that keeps the
+AWS SDK out of core (`heartland-webhooks-core/src/publishing`). The pipeline itself still
+invokes handlers inline.
 
+Still to come:
+
+- The receiver rework (trigger-only parse, authoritative fetch, enqueue) and the dispatcher
+  package that consumes the queue.
 - A tenant package carrying the Bricks & Minifigs Herndon business logic, ported from
   `OperationalHooks` (transaction strategies, item image sourcing, GroupMe/BrickLink/Toyhouse
   clients).
