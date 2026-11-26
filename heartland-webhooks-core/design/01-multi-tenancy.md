@@ -147,12 +147,14 @@ The request-reading resolvers trim their input and treat an empty string as
 `undefined`. `fixedTenant` returns its argument verbatim, and `firstOf`
 delegates, so neither normalizes anything itself.
 
-Whether Heartland actually permits a per-tenant path on a registered webhook URL
-is **unconfirmed** — it is to be settled in testing. If it does not, switching to
-`fromHeader` or `fromQueryString` is a change in the calling module's wiring and
-not a change to core. The case that would need a small core change is a tenant
-discriminator available only inside the payload, since a resolver runs before
-the body is parsed; see [06 — Open questions](06-open-questions.md).
+The tenant segment is **required**, not conventional: we register the webhook
+URL ourselves, and a Function URL routes every path to the same function, so the
+segment needs no capability from Heartland
+([ADR-0011](adr/0011-tenant-id-required-in-webhook-url.md)). If Heartland turns
+out to reject a path on the registered URL, the fallback is a Function URL per
+tenant with `fixedTenant(id)` — the tenant stays structurally required. Reading
+the tenant from the parsed payload is explicitly not the fallback, because it
+would invert the ordering that makes an unroutable request diagnosable.
 
 ## Single-tenant deployments
 

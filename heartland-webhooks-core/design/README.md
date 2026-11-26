@@ -41,10 +41,12 @@ module.
 | [0008](adr/0008-reload-context-on-401.md) | Reload a tenant context on 401, rather than expiring it |
 | [0009](adr/0009-log-header-names-allowlist-values.md) | Log every header's name, but only allowlisted values |
 | [0010](adr/0010-bound-outcome-details.md) | Bound `details` in the response |
+| [0011](adr/0011-tenant-id-required-in-webhook-url.md) | The tenant id is a required path segment of the webhook URL |
+| [0012](adr/0012-report-shapes-belong-to-the-caller.md) | Report shapes belong to the caller, not to core |
 
 ADRs 0007–0010 are **decided but not yet implemented** — they settle the design
 question; the code changes are tracked as issues. Each one says what `0.1.0`
-does today.
+does today. 0011 and 0012 describe the design as it already stands.
 
 The system-wide decision that this package exists at all —
 transport separated from business logic, handlers multi-tenant by construction —

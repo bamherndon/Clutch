@@ -76,8 +76,8 @@ handler never calls Heartland back — see
 - **Make `supports()` cheap and pure.** It runs before the tenant context is
   built, so it must not perform I/O — and there is no context available to it.
 - **Assume at-least-once delivery.** Nothing in core deduplicates, so a handler
-  whose action is not naturally idempotent needs its own guard — see
-  [06 — Open questions](06-open-questions.md).
+  whose action is not naturally idempotent needs its own guard — see the
+  [system-level open questions](../../design/05-open-questions.md).
 - **Finish within the invocation.** There is no queue; work abandoned at return
   is work lost.
 

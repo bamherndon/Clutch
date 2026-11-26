@@ -132,6 +132,12 @@ inside the client means no caller can forget. `HeartlandReportQuery` is an alias
 for `QueryParams`, so report filters are passed as plain records and the array
 repetition rule applies automatically.
 
+`runReport<T>` stays generic and core models no report shapes. Heartland's
+reporting response is keyed by the **columns the query asked for**, so the shape
+is a function of the call rather than of the report type — a typed row interface
+therefore belongs with the automation that makes the call, alongside the filters
+it uses. See [ADR-0012](adr/0012-report-shapes-belong-to-the-caller.md).
+
 ## Types
 
 `src/clients/heartland-types.ts` models responses as `PaginatedResponse<T>`
