@@ -45,6 +45,14 @@ system deeply and knows nothing about any other system.
 for a BrickLink lot. This is the only layer that sees more than one system at
 once, and it is where every cross-system rule lives.
 
+It owns more than rules. State, idempotency, and recovery are each handler's own
+([ADR-0008](adr/0008-handlers-own-state-idempotency-recovery.md)), so there is no
+shared datastore and no framework deduplication — and each handler gets a context
+carrying only the systems it declares
+([ADR-0009](adr/0009-handler-specific-contexts.md)), not one context holding
+every client. What that obliges a handler's own design to answer is listed in
+[06 — Handler responsibilities](06-handler-responsibilities.md).
+
 **The dispatcher owns the queue side.** It consumes messages, invokes the
 handler, and lets a message fail into the dead-letter queue when the handler's
 own retries are exhausted. It is a separate package from the receiver because it

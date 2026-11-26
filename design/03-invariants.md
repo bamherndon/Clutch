@@ -25,12 +25,17 @@ Inventory truth lives in Heartland. Channels are replicas. When they disagree,
 Heartland wins and the channel is corrected.
 ([ADR-0001](adr/0001-heartland-system-of-record.md))
 
-## 3. Credentials stop at the connector
+## 3. Credentials stop at the connector, and reach only the handlers that ask
 
 A connector receives credential *access* and hands out an authenticated client.
 Business logic never sees a token. Secret storage and rotation belong to the
 deployment module, reached through an injected loader function, so no other
 module imports an AWS SDK or knows where secrets live.
+
+A handler receives clients only for the systems it declares
+([ADR-0009](adr/0009-handler-specific-contexts.md)), so a credential reaches
+exactly the automations that need it and a deployment holds only what its
+handlers use.
 
 ## 4. A failure in one store, one system, or one handler stays there
 
@@ -48,9 +53,12 @@ in core and [ADR-0007](adr/0007-asynchronous-processing-with-dlqs.md) here.
 ## 5. Assume at-least-once delivery; make actions idempotent
 
 Any event may arrive twice, and any action may be retried. An action that is not
-naturally idempotent needs its own guard. Nothing in Clutch deduplicates today,
-which makes this the most easily violated invariant on the list — tracked in
-[05 — Open questions](05-open-questions.md).
+naturally idempotent needs its own guard, and **that guard is the handler's**
+([ADR-0008](adr/0008-handlers-own-state-idempotency-recovery.md)) — nothing in
+Clutch deduplicates, by decision rather than by omission. This is the most
+easily violated invariant on the list;
+[06 — Handler responsibilities](06-handler-responsibilities.md) is the list each
+handler design answers so a violation is visible in review.
 
 **This is now a correctness requirement, not an expectation.** Queue delivery is
 at-least-once, so a handler that fails after partially completing its writes

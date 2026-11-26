@@ -15,6 +15,7 @@ folder, and this one does not repeat them.
 | [03 — Invariants](03-invariants.md) | The rules every module must honor |
 | [04 — Roadmap](04-roadmap.md) | What we're building in what order, and why that order |
 | [05 — Open questions](05-open-questions.md) | System-level gaps and decisions not yet made |
+| [06 — Handler responsibilities](06-handler-responsibilities.md) | What every handler's own design must answer |
 | [ADRs](adr/) | System-wide decisions, one per file |
 
 ## The shape of it
