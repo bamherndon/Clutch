@@ -4,10 +4,20 @@ System-level gaps: decisions not yet made that cross module boundaries. Gaps
 inside a single module live in that module's own record — core's are in
 [`heartland-webhooks-core/design/06-open-questions.md`](../heartland-webhooks-core/design/06-open-questions.md).
 
-When one of these is settled it becomes an [ADR](adr/) and the entry is deleted.
-Five were settled on 2026-11-26 — see [Settled](#settled) at the end.
+Every entry names the issue that resolves it, so an open question is never just
+a note — it is work someone can pick up. When one is settled it becomes an
+[ADR](adr/) and the entry here is deleted. Five were settled on 2026-11-26 —
+see [Settled](#settled) at the end.
 
 Ordered by how much they block.
+
+| # | Question | Issue |
+| --- | --- | --- |
+| 1 | Operational recovery has no design and no home | [#21](https://github.com/bamherndon/Clutch/issues/21) |
+| 2 | Idempotency is required and nothing enforces it | [#23](https://github.com/bamherndon/Clutch/issues/23) |
+| 3 | What "in sync" means, per channel | [#24](https://github.com/bamherndon/Clutch/issues/24) |
+| 4 | Replay of a valid trigger | [#12](https://github.com/bamherndon/Clutch/issues/12) |
+| 5 | Capacity is shared, and unmeasured | [#22](https://github.com/bamherndon/Clutch/issues/22) |
 
 ## 1. Operational recovery has no design and no home
 
@@ -62,6 +72,10 @@ What remains genuinely open is whether that holds. If the same hand-rolled guard
 keeps appearing in handler after handler, the framework-level version earns its
 keep and this becomes an ADR.
 
+Tracked in [issue #23](https://github.com/bamherndon/Clutch/issues/23), which
+records the trigger to watch for and the part that is actually hard: defining
+"processed" for a handler that completed half its writes.
+
 ## 3. What "in sync" means, per channel
 
 Related to item 1 but distinct: even with a sweep designed, each channel needs
@@ -72,6 +86,10 @@ specified it.
 
 First real answer comes with the BrickLink connector, which is also where the
 identity-mapping question gets answered now that handlers own their own state.
+
+Tracked in [issue #24](https://github.com/bamherndon/Clutch/issues/24). Note the
+dependency: the reconciliation sweep in item 1 cannot correct drift without this
+definition of what it is drifting from.
 
 ## 4. Replay of a valid trigger
 
@@ -87,10 +105,10 @@ attacker replaying valid ids at volume, which is a load problem as much as a
 correctness one — see the throttling note in ADR-0006, including the sharp edge
 that a global concurrency cap returns 429 to Heartland too.
 
-Still worth doing: the probe for a signing mechanism
-([issue #12](https://github.com/bamherndon/Clutch/issues/12)). Signing would
-authenticate the payload and close this properly. It is no longer a blocker,
-which is the point of ADR-0006.
+Tracked in [issue #12](https://github.com/bamherndon/Clutch/issues/12) — the
+probe for a signing mechanism, which is what would resolve this rather than
+merely bound it. Signing would authenticate the payload and close it properly.
+It is no longer a blocker, which is the point of ADR-0006.
 
 **If signing does turn out to exist:** verify it in the receiver, before
 anything else, and keep reading the record from the API anyway. The two are
