@@ -39,10 +39,11 @@ down must not block the others. A handler throwing must not take an endpoint
 down — a receiving endpoint that keeps erroring gets disabled by the upstream
 system, which turns a contained failure into a silent outage.
 
-**Consequence:** failures are contained at the boundary, reported in the
-response body, and logged — not propagated. The worked version of this is
+**Consequence:** failures are contained at the boundary, logged, and — once
+past the boundary — parked in a dead-letter queue rather than dropped. The
+worked versions are
 [ADR-0002 — always answer 200](../heartland-webhooks-core/design/adr/0002-always-200.md)
-in core.
+in core and [ADR-0007](adr/0007-asynchronous-processing-with-dlqs.md) here.
 
 ## 5. Assume at-least-once delivery; make actions idempotent
 
@@ -51,10 +52,33 @@ naturally idempotent needs its own guard. Nothing in Clutch deduplicates today,
 which makes this the most easily violated invariant on the list — tracked in
 [05 — Open questions](05-open-questions.md).
 
+**This is now a correctness requirement, not an expectation.** Queue delivery is
+at-least-once, so a handler that fails after partially completing its writes
+*will* be re-run from the start
+([ADR-0007](adr/0007-asynchronous-processing-with-dlqs.md)). A forged trigger
+carrying a real id can also cause a legitimate record to be reprocessed
+([ADR-0006](adr/0006-webhook-is-a-trigger-api-is-truth.md)). Both are routine,
+not exotic.
+
 **Why it gets worse in phase 2:** a duplicated outbound push is usually
 harmless; a duplicated *inbound* channel sale double-decrements real inventory.
 
-## 6. Every action is attributable from logs alone
+## 6. A trigger is not data
+
+An inbound event tells us *that* something happened and which record it
+concerns. It is never the source of what happened. Read the record from the
+owning system's API, with our own credentials, and act on that
+([ADR-0006](adr/0006-webhook-is-a-trigger-api-is-truth.md)).
+
+**Why:** inbound events cannot be authenticated, so their contents cannot be
+trusted. Reading the record also makes the id's validity checkable at the edge,
+and makes stale or out-of-order events largely self-correcting.
+
+**Consequence:** a connector parses an inbound event only far enough to extract
+an id, an event type, and a tenant. A handler that reaches for a field from the
+raw event body is reading untrusted input.
+
+## 7. Every action is attributable from logs alone
 
 CloudWatch is the only diagnostic channel — there is no replay tool and no
 separate on-call. Every log line carries the tenant, and every failure carries
@@ -65,13 +89,13 @@ intact.
 that reads as "request failed" has violated this rule even if it is technically
 logged.
 
-## 7. Modules are replaceable in tests
+## 8. Modules are replaceable in tests
 
 Every external system is reached through an interface or an injected factory, so
 a module's own tests run with no network and no AWS. A module that cannot be
 tested without credentials has a boundary in the wrong place.
 
-## 8. BAM field names live behind one definition
+## 9. BAM field names live behind one definition
 
 Clutch assumes the BAM item schema ([ADR-0005](adr/0005-assume-bam-item-schema.md)),
 and modules may rely on those custom fields. They read them through the shared
@@ -85,7 +109,7 @@ blast radius of a corporate schema change one file.
 **Consequence:** a missing mandated field is reported as a data problem for that
 item and the item is skipped — not thrown, and not assumed absent everywhere.
 
-## 9. One system per connector; routing is business logic
+## 10. One system per connector; routing is business logic
 
 A connector never calls another connector. Cross-system rules live in business
 logic, so connecting the next system is additive.

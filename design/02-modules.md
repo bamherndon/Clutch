@@ -9,22 +9,32 @@ those scripts and appearing in the root `workspaces` array.
 ```mermaid
 graph TD
     subgraph connectors["Connectors — one per system"]
-        HWC["heartland-webhooks-core<br/><i>implemented</i>"]
+        HWC["heartland-webhooks-core<br/><i>shared library + receiver</i>"]
         BLC["bricklink connector<br/><i>planned</i>"]
         EBC["ebay connector<br/><i>planned</i>"]
         FBC["fb marketplace connector<br/><i>planned</i>"]
     end
 
+    Q[["queue + DLQs"]]
+    DIS["dispatcher<br/><i>queue consumer, planned</i>"]
     BL["business logic<br/><i>handlers: what an event means</i>"]
-    DEP["deployment (CDK)<br/><i>functions, IAM, secrets, schedules</i>"]
+    DEP["deployment (CDK)<br/><i>functions, queues, IAM, secrets, schedules</i>"]
 
-    HWC -->|"events in"| BL
+    HWC -->|"validated record"| Q
+    Q --> DIS
+    DIS -->|"invokes"| BL
     BL -->|"actions out"| BLC
     BL --> EBC
     BL --> FBC
     DEP --> HWC
-    DEP --> BL
+    DEP --> DIS
+    DEP --> Q
 ```
+
+Receiving and handling are **separate deployables with a queue between them**
+([ADR-0007](adr/0007-asynchronous-processing-with-dlqs.md)), so they are separate
+packages: the receiver answers Heartland in milliseconds, the handler takes as
+long as the work takes.
 
 **Connectors own a system.** One module per connected system, covering both
 directions: that system's API client, its event ingestion, and its outbound
@@ -35,9 +45,22 @@ system deeply and knows nothing about any other system.
 for a BrickLink lot. This is the only layer that sees more than one system at
 once, and it is where every cross-system rule lives.
 
-**Deployment owns the runtime.** Function URLs, IAM, secret storage, log
-retention, schedules — and the real `getToken` implementations. Keeping it a
-separate module is what lets every other module run in tests with no AWS.
+**The dispatcher owns the queue side.** It consumes messages, invokes the
+handler, and lets a message fail into the dead-letter queue when the handler's
+own retries are exhausted. It is a separate package from the receiver because it
+is a separate Lambda with a different timeout, memory, and concurrency profile.
+
+**Deployment owns the runtime.** Function URLs, queues and their DLQs, IAM,
+secret storage, log retention, schedules — and the real `getToken`
+implementations. Keeping it a separate module is what lets every other module
+run in tests with no AWS.
+
+Where the shared code lives is worth stating, since "separate packages" could
+mean two or three: `heartland-webhooks-core` keeps the shared library — tenancy,
+the Heartland client, parsing, models, logging — plus the receiver factory that
+already lives there, and the dispatcher is a new package depending on it. The
+alternative is three packages with a dependency-free shared library in the
+middle; it is cleaner on paper and costs a refactor of code that already works.
 
 ## Why connectors don't call each other
 

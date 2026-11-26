@@ -37,7 +37,8 @@ graph LR
 
     FUTURE["vendor sites · Patron · …"]
 
-    HL -->|"events: sale, item created"| CORE
+    HL -->|"triggers: sale, item created"| CORE
+    HL -.->|"authoritative record, read back"| CORE
     CORE -->|"replicate inventory"| BL
     CORE --> EB
     CORE --> FB
@@ -52,6 +53,11 @@ Every connected system is an **event source**, an **action target**, or both.
 Clutch's job is the arrow in the middle: notice something happened in one place,
 decide what that means elsewhere, and do it — per store, with that store's
 credentials.
+
+Note the second arrow back from Heartland. An inbound webhook is only a
+*trigger*: it says which record changed, and Clutch reads the record itself from
+the API before acting on it. Inbound events cannot be authenticated, so their
+contents are not trusted ([ADR-0006](adr/0006-webhook-is-a-trigger-api-is-truth.md)).
 
 The first class of work is **inventory replication**: what Heartland says is in
 stock should be what each sales channel is offering. Heartland is the system of
@@ -77,11 +83,18 @@ sale decrementing Heartland and the other channels — is the known destination,
 and the boundaries are designed for it, but nothing consumes channel events yet
 ([ADR-0003](adr/0003-one-way-now-two-way-destination.md)).
 
+**Processing is asynchronous.** Receiving and handling are separate deployables
+with a queue between them, so a webhook is answered in milliseconds and the work
+happens after, with dead-letter queues catching what fails
+([ADR-0007](adr/0007-asynchronous-processing-with-dlqs.md)). That is a change
+from the synchronous `0.1.0` code and is not implemented yet.
+
 ## Module design records
 
 | Module | Design | Status |
 | --- | --- | --- |
-| [`heartland-webhooks-core`](../heartland-webhooks-core/design/) | Heartland event transport and REST client | Implemented |
+| [`heartland-webhooks-core`](../heartland-webhooks-core/design/) | Heartland trigger receiver, shared library, REST client | Implemented (synchronous) |
+| Dispatcher | — | Queue consumer that invokes handlers |
 | Business logic handlers | — | Next |
 | BrickLink connector | — | Planned |
 | eBay connector | — | Planned |
