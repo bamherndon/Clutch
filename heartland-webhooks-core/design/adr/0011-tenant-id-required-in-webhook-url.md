@@ -2,6 +2,13 @@
 
 **Status:** Accepted · **Date:** 2026-11-26
 
+> **Update (2026-11-26):** unaffected by the move to asynchronous processing.
+> Throttling was the one thing that might have forced API Gateway in front of
+> the function — and function URLs throttle natively via reserved concurrency
+> ([ADR-0006 at the system level](../../../design/adr/0006-webhook-is-a-trigger-api-is-truth.md)),
+> so the Function URL premise below holds and `fromPathSegment` stays the
+> default.
+
 Closes the payload-resolution gap (formerly open question 2, and open question 7
 before that).
 

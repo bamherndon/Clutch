@@ -1,5 +1,14 @@
 # 02 — Webhook pipeline
 
+> **This describes `0.1.0`, which is synchronous.** The lifecycle below runs the
+> handler inside the webhook invocation and acts on the parsed payload. Both are
+> superseded by
+> [ADR-0006](../../design/adr/0006-webhook-is-a-trigger-api-is-truth.md) and
+> [ADR-0007](../../design/adr/0007-asynchronous-processing-with-dlqs.md) at the
+> system level: the receiver will validate a trigger against the API and enqueue,
+> and the handler will run in its own Lambda. This document will be split in two
+> when that lands. Until then it is an accurate description of the code.
+
 `src/lambda/pipeline.ts` holds the entire lifecycle of an inbound webhook. It is
 the most load-bearing file in the package: every ordering decision and every
 error-containment rule lives there, once, for both event types.

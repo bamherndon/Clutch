@@ -8,6 +8,16 @@ For what Clutch is as a whole — the BAM ecosystem, the other systems being
 connected, and the rules every module honors — start at the top-level
 [design record](../../design/).
 
+> **The processing shape is changing.** This package describes `0.1.0`, which
+> handles a webhook synchronously and acts on the parsed payload. Two
+> system-level decisions supersede that: a webhook becomes a *trigger* and the
+> authoritative record is read from the API
+> ([ADR-0006](../../design/adr/0006-webhook-is-a-trigger-api-is-truth.md)), and
+> receiving is split from handling by a queue
+> ([ADR-0007](../../design/adr/0007-asynchronous-processing-with-dlqs.md)).
+> Neither is implemented yet. Documents below are accurate about the code and
+> flag where a decision has overtaken them.
+
 **Scope.** This package is tenant-agnostic across Bricks & Minifigs stores, not
 across retailers: it models the Heartland standard fields plus the custom fields
 BAM corporate mandates for all its stores

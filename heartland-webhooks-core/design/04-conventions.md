@@ -77,7 +77,7 @@ fields, and it lives here so every module shares it. Add a field to it rather
 than reaching into `custom` with a string literal somewhere downstream — the
 reasoning is in
 [ADR-0005](../../design/adr/0005-assume-bam-item-schema.md) and
-[invariant 8](../../design/03-invariants.md).
+[invariant 9](../../design/03-invariants.md).
 
 The fields are modelled as optional, and that is not pessimism about the
 corporate mandate: a mandated field can still be blank on an individual item.

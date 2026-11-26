@@ -2,6 +2,13 @@
 
 **Status:** Accepted · **Date:** 2026-11-26
 
+> **Update (2026-11-26):** under
+> [ADR-0007 at the system level](../../../design/adr/0007-asynchronous-processing-with-dlqs.md)
+> the handler runs off a queue, so `details` has no synchronous consumer at all
+> and the response collapses to accepted/rejected. The cap below still applies
+> to what reaches the logs, and the rule it encodes — volume goes to the logger,
+> summary goes in `details` — is unchanged.
+
 Settles the unbounded-`details` gap (formerly open question 6).
 
 ## Context

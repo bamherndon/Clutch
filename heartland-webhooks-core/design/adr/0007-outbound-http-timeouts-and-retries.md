@@ -1,6 +1,15 @@
 # ADR-0007 — Outbound HTTP: bounded timeouts, retry reads only
 
-**Status:** Accepted · **Date:** 2026-11-26
+**Status:** Accepted; retry policy superseded in part · **Date:** 2026-11-26
+
+> **Update (2026-11-26):** the system moved to asynchronous processing
+> ([ADR-0007 at the system level](../../../design/adr/0007-asynchronous-processing-with-dlqs.md)).
+> The timeout decision below stands unchanged. The retry decision is amended:
+> durability now comes from the queue and the dead-letter queues, not from
+> retrying inside the request, so the **receiver's** budget shrinks to a couple
+> of fast attempts and the **handler** owns the patient retries. "Retry reads,
+> never writes" survives intact — and matters more, because at-least-once
+> delivery re-runs a handler that failed partway through its writes.
 
 Settles the timeout and retry gaps (formerly open questions 3 and 4). They are
 one decision: both are about what `requestJson` owes a caller when Heartland
