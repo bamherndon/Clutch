@@ -87,10 +87,16 @@ attacker replaying valid ids at volume, which is a load problem as much as a
 correctness one — see the throttling note in ADR-0006, including the sharp edge
 that a global concurrency cap returns 429 to Heartland too.
 
-Still worth doing: the
-[probe](../heartland-webhooks-core/design/06-open-questions.md) for a signing
-mechanism. Signing would authenticate the payload and close this properly. It is
-no longer a blocker, which is the point of ADR-0006.
+Still worth doing: the probe for a signing mechanism
+([issue #12](https://github.com/bamherndon/Clutch/issues/12)). Signing would
+authenticate the payload and close this properly. It is no longer a blocker,
+which is the point of ADR-0006.
+
+**If signing does turn out to exist:** verify it in the receiver, before
+anything else, and keep reading the record from the API anyway. The two are
+complementary — a signature says the trigger is genuine, the API read says the
+data is current — and dropping the read would also give up the id validation
+that makes an invalid trigger fail at the edge.
 
 ## 5. Capacity is shared, and unmeasured
 
