@@ -80,6 +80,7 @@ heartland-webhooks-core/src/
   model/        Heartland payload types + classification helpers
   parsing/      ParseResult-returning body parsers; typed JSON readers
   handlers/     TransactionHandler / ItemHandler — the handler contract
+  publishing/   QueueMessage / ParkedTrigger contract + the EventPublisher seam
   tenancy/      TenantConfig, TenantRegistry, TenantResolver
   lambda/       pipeline.ts (shared plumbing) + the two entrypoint factories
   clients/      requestJson + HeartlandApiClient
@@ -104,6 +105,13 @@ over the same pipeline rather than a new copy of the flow.
   secret load.
 - Tests use `NoopLogger` and inject a fake client through `clientFactory`. No test should
   make a network call.
+- **No AWS SDK in core.** Putting an event on a queue goes through the injected
+  `EventPublisher` (`publishing/`), the same way credentials go through `getToken`. Tests
+  use `RecordingPublisher`; the deployment module supplies the SQS-backed implementation.
+- `publishing/` is the versioned contract between the receiver and the dispatcher, which
+  deploy independently. A reader rejects a `schemaVersion` it does not know
+  (`parseQueueMessage`) rather than reading the fields it recognizes and guessing. The
+  pipeline does not use these types yet — the receiver rework is still open.
 
 ## Relationship to OperationalHooks
 

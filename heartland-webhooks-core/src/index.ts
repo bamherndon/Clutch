@@ -43,6 +43,27 @@ export {
   toOutcome,
 } from './handlers/handler';
 
+// Publishing — the receiver/dispatcher contract and its injected seam
+export {
+  QUEUE_SCHEMA_VERSION,
+  QueueEventType,
+  QueueMessage,
+  ParkedTrigger,
+  EventPublisher,
+} from './publishing/types';
+export {
+  QueueMessageInput,
+  ParkedTriggerInput,
+  buildQueueMessage,
+  buildParkedTrigger,
+  idempotencyKeyFor,
+} from './publishing/build-queue-message';
+export { parseQueueMessage } from './publishing/queue-message-parser';
+export {
+  RecordingPublisher,
+  RecordingPublisherOptions,
+} from './publishing/recording-publisher';
+
 // Tenancy
 export {
   TenantId,

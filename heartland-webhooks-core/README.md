@@ -136,6 +136,33 @@ line instead of surfacing later as a confusing auth error.
 ### Handler contract
 - `TransactionHandler`, `ItemHandler`, `WebhookOutcome`
 
+### Publishing — the receiver → dispatcher contract
+- `QueueMessage`, `ParkedTrigger`, `QUEUE_SCHEMA_VERSION`, `QueueEventType`
+- `EventPublisher` — `publish(message)` / `park(trigger)`, injected by the caller
+- `buildQueueMessage(input)`, `buildParkedTrigger(input)`, `idempotencyKeyFor(…)`
+- `parseQueueMessage(value)` — `ParseResult<QueueMessage>`, rejecting unknown schema
+  versions
+- `RecordingPublisher` — in-memory test double, with `publishError` / `parkError` to
+  exercise the failure paths
+
+These types are the contract between the two deployables the async rework introduces: a
+receiver that validates a trigger and enqueues the authoritative record, and a dispatcher
+that consumes the queue and runs the handler
+([ADR-0007](../design/adr/0007-asynchronous-processing-with-dlqs.md)). They are published
+ahead of that rework so both sides build against one definition instead of two copies —
+**the pipeline in this version does not use them yet**; it still invokes handlers inline.
+
+Publishing is an interface rather than an SQS call for the same reason `getToken` is a
+function: the deployment module supplies the AWS-backed implementation, which keeps the
+SDK out of this package's dependencies and its cold start
+([ADR-0004](./design/adr/0004-zero-runtime-dependencies.md)). Tests supply a
+`RecordingPublisher`.
+
+`idempotencyKey` is `${tenantId}:${eventType}:${recordId}`, which is correct only because
+a completed transaction and a created item are each one-time events. A future
+`item_updated` would change the same record repeatedly and this key would collapse
+distinct updates — that event needs a new key, not this one.
+
 ### Tenancy
 - `TenantConfig` (what a deployment declares), `TenantContext` (what a handler receives),
   `TenantId`, `UnknownTenantError`
