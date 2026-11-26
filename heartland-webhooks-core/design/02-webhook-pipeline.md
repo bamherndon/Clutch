@@ -1,181 +1,272 @@
 # 02 — Webhook pipeline
 
-> **This describes `0.1.0`, which is synchronous.** The lifecycle below runs the
-> handler inside the webhook invocation and acts on the parsed payload. Both are
-> superseded by
-> [ADR-0006](../../design/adr/0006-webhook-is-a-trigger-api-is-truth.md) and
-> [ADR-0007](../../design/adr/0007-asynchronous-processing-with-dlqs.md) at the
-> system level: the receiver will validate a trigger against the API and enqueue,
-> and the handler will run in its own Lambda. This document will be split in two
-> when that lands. Until then it is an accurate description of the code.
+**This document describes the target state**, as decided by
+[ADR-0006](../../design/adr/0006-webhook-is-a-trigger-api-is-truth.md) (a webhook
+is a trigger; the API is the source of truth) and
+[ADR-0007](../../design/adr/0007-asynchronous-processing-with-dlqs.md)
+(asynchronous processing). The `0.1.0` code is synchronous and acts on the
+payload. [What is implemented](#status-against-the-code) at the end maps every
+stage to its gap issue.
 
-`src/lambda/pipeline.ts` holds the entire lifecycle of an inbound webhook. It is
-the most load-bearing file in the package: every ordering decision and every
-error-containment rule lives there, once, for both event types.
+One inbound event crosses two deployables:
 
-## The `WebhookPipeline` seam
+```mermaid
+flowchart LR
+    HL([Heartland]) -->|"POST trigger"| R["<b>Receiver</b><br/>heartland-webhooks-core"]
+    R -->|"200 accepted"| HL
+    R -->|"GET record"| HL
+    R -->|"message"| Q[["queue"]]
+    R -.->|"fetch failed"| CDLQ[["core DLQ"]]
+    Q --> D["<b>Dispatcher</b><br/>new package"]
+    D -->|"record + context"| H["handler"]
+    Q -.->|"maxReceiveCount exceeded"| HDLQ[["handler DLQ"]]
+```
 
-`createWebhookLambda` is generic over payload and handler type. Everything that
-differs between the two webhooks is supplied as a small record:
+## Receiver
 
-| Field | Transaction lambda | Item lambda |
-| --- | --- | --- |
-| `eventType` | `sales_transaction_completed` | `item_created` |
-| `parse` | `parseTransactionBody` | `parseItemCreatedBody` |
-| `describe` | id, type, kind, `summarizeTransaction()` | id, publicId, department, subDepartment |
-| `supports` | `handler.supports(tx, kind)` | `handler.supports(item)` |
-| `invoke` | `handler.handleTransaction` | `handler.handleItemCreated` |
-| `handlerName` | `handler.name` | `handler.name` |
-
-Everything else — envelope logging, tenant resolution, validation order, error
-containment, response shaping — is shared and not configurable. A third event
-type is a new `describe`/`parse`/`invoke` triple, not a new lifecycle. See
-[ADR-0001](adr/0001-pipeline-over-per-event-lambdas.md).
-
-`describe()` deserves its own note: its output is merged into *both* the log
-line and the response body. One definition of "what is worth saying about this
-payload" serves diagnosis and the HTTP answer at once.
-
-## Construction-time checks
-
-Before returning a handler function, `createWebhookLambda` fails loudly on
-misconfiguration:
-
-- Zero tenants registered → throw.
-- More than one tenant and no `resolveTenant` → throw, naming the registered ids.
-
-Both fire at cold start, so a bad deploy breaks immediately and visibly rather
-than mis-routing a live webhook.
-
-## Lifecycle
+Runs inside the webhook request. Its whole job is to turn an untrusted trigger
+into a validated record on a queue, fast.
 
 ```mermaid
 flowchart TD
-    START([Heartland POST]) --> LOGENV["log envelope:<br/>rawPath, headers, http, timeEpoch"]
-    LOGENV --> BODY{"body present?"}
-    BODY -->|no| IGN1["<b>ignored</b><br/>request has no body"]
-    BODY -->|yes| RESOLVE["resolveTenant(event)<br/><i>or soleTenantId</i>"]
-    RESOLVE --> GOT{"tenant id?"}
-    GOT -->|no| ERR1["<b>error</b><br/>could not resolve a tenant<br/>+ rawPath, knownTenantIds"]
-    GOT -->|yes| KNOWN{"registered?"}
-    KNOWN -->|no| ERR2["<b>error</b><br/>unknown tenant<br/>+ knownTenantIds"]
-    KNOWN -->|yes| PARSE["pipeline.parse(body)"]
-    PARSE --> OK{"parsed?"}
-    OK -->|no| ERR3["<b>error</b><br/>could not parse body<br/><i>raw body logged</i>"]
-    OK -->|yes| DESC["describe(payload)"]
-    DESC --> SUP{"handler supports it?"}
-    SUP -->|no| IGN2["<b>ignored</b><br/>handler does not support this event"]
-    SUP -->|yes| CTX["registry.context(tenantId)<br/><i>token load + client build</i>"]
-    CTX --> CTXOK{"succeeded?"}
-    CTXOK -->|no| ERR4["<b>error</b><br/>tenant initialization failed"]
-    CTXOK -->|yes| INVOKE["invoke(handler, payload, context)"]
-    INVOKE --> THREW{"threw?"}
-    THREW -->|yes| ERR5["<b>error</b><br/>handler threw<br/><i>logged with stack</i>"]
-    THREW -->|no| DONE["<b>ok / error</b> per outcome.ok<br/>+ details"]
+    START([POST]) --> LOG["log envelope<br/><i>header names + allowlisted values</i>"]
+    LOG --> BODY{"body present?"}
+    BODY -->|no| IGN["<b>ignored</b>"]
+    BODY -->|yes| TEN["resolve tenant<br/><i>required path segment</i>"]
+    TEN --> TENOK{"known tenant?"}
+    TENOK -->|no| ERR1["<b>error</b><br/>unroutable"]
+    TENOK -->|yes| PARSE["extract trigger<br/><i>record id only</i>"]
+    PARSE --> PID{"id present?"}
+    PID -->|no| ERR2["<b>error</b><br/>unparseable trigger"]
+    PID -->|yes| CTX["build tenant context"]
+    CTX --> FETCH["GET the record<br/><i>short retry budget</i>"]
+    FETCH --> FOK{"resolved?"}
+    FOK -->|"not found"| REJ["<b>rejected</b><br/>id does not exist"]
+    FOK -->|"failed after retries"| PARK["park trigger → core DLQ"]
+    FOK -->|yes| PUB["enqueue record"]
+    PUB --> PUBOK{"published?"}
+    PUBOK -->|no| PARK
+    PUBOK -->|yes| ACC["<b>accepted</b>"]
+    PARK --> ERRD["<b>error</b><br/>parked for replay"]
 
-    IGN1 --> R([HTTP 200])
-    ERR1 --> R
-    ERR2 --> R
-    ERR3 --> R
-    ERR4 --> R
-    IGN2 --> R
-    ERR5 --> R
-    DONE --> R
+    IGN --> R200([HTTP 200])
+    ERR1 --> R200
+    ERR2 --> R200
+    REJ --> R200
+    ERRD --> R200
+    ACC --> R200
 ```
-
-Every path ends at HTTP 200. See [ADR-0002](adr/0002-always-200.md).
 
 ### Why this order
 
-**Envelope first.** `rawPath`, headers, and request context are logged before
-anything can fail, so even a request that is rejected on the next line leaves a
-trace of where it came from.
+**Tenant before trigger parse**, unchanged in spirit from `0.1.0`: an unroutable
+request is a configuration problem and deserves to be reported as itself. The
+tenant is a required path segment
+([ADR-0011](adr/0011-tenant-id-required-in-webhook-url.md)), so this is a cheap
+string operation.
 
-**Tenant before parse.** An unroutable request is a *configuration* problem — a
-webhook registered against the wrong path — and deserves to be reported as
-itself rather than hidden behind a parse error from a body we were never going
-to process. The comment in the source says exactly this.
+**Parse before context.** Extracting an id is free; building a context may load
+a secret.
 
-**Parse before context.** Parsing is pure and free; loading a token may hit the
-network. No reason to pay for a credential to process a body we cannot read.
+**Context before fetch**, necessarily — the fetch uses that tenant's
+credentials. This is also the ordering change worth noticing: in `0.1.0` the
+handler's `supports()` ran before the context was built, which let an unwanted
+event cost nothing. There is no `supports()` here any more; it belongs to the
+handler, and the handler is in another process
+([ADR-0007](../../design/adr/0007-asynchronous-processing-with-dlqs.md)). The
+receiver therefore pays for a context and a fetch on every routable trigger.
 
-**`supports` before context.** `supports()` is cheap, pure, and needs only the
-payload, so asking it first means an event the handler does not want costs no
-token load and no client construction. This ordering is only possible because
-the handler is a single multi-tenant instance available at construction — when
-handlers were per-tenant, reaching one meant resolving its tenant first.
+**Fetch before enqueue.** This is the point of the design: the fetch validates
+the id *and* supplies the data. A trigger that names nothing real never reaches
+the queue.
 
-Hence the invariant for handler authors: `supports()` must not perform I/O or
-touch the context, because there is no context yet when it runs.
+### The trigger parse is deliberately tiny
 
-### `ignored` vs `error`
+A trigger parser reads the record id and nothing else. The rich normalization in
+`parseItemCreatedBody` — forty fields mapped from `snake_case` to camelCase —
+feeds nothing once the record comes from the API, because handlers consume the
+API's representation. The parsers stay `ParseResult`-returning and
+non-throwing ([ADR-0006](adr/0006-parse-results-not-exceptions.md)); they just
+have far less to do.
 
-| `status` | Meaning | Examples |
+### Response statuses
+
+Always HTTP 200 ([ADR-0002](adr/0002-always-200.md)). `status` is still the field
+to assert on, and the vocabulary grows a term because "we accepted this for
+later" is now distinct from "we did it":
+
+| `status` | Means | Where the work is |
 | --- | --- | --- |
-| `ok` | Handler ran and reported success | `outcome.ok === true` |
-| `ignored` | Nothing to do, and that is fine | No body; handler's `supports()` returned false |
-| `error` | Something is wrong and someone should look | Unresolvable or unknown tenant; unparseable body; token load failed; handler threw; `outcome.ok === false` |
+| `accepted` | Record fetched and enqueued | on the queue |
+| `ignored` | Nothing to do — no body | nowhere, correctly |
+| `rejected` | The id does not resolve. A bogus or stale trigger | nowhere, correctly |
+| `error` | We failed: fetch or publish | core DLQ, if parking succeeded |
 
-The split is about whether a human should care, not about where in the pipeline
-the decision was made. `ignored` lines log at `warn`, `error` lines at `error`.
+`rejected` is worth separating from `error`: it is the expected answer to a
+forged or stale trigger, and conflating it with our own failures would bury the
+one signal that distinguishes "someone is poking at us" from "Heartland is
+down".
 
-Note that `ignored` carries `ok: false` in the body: `ok` means "the handler did
-the work", and an ignored event had no work done. Assertions should key on
-`status`, which is the field the response documents as stable.
+Handler results no longer appear here at all. There is nothing to report
+synchronously, so `WebhookOutcome.details` becomes a logging concern
+([ADR-0010](adr/0010-bound-outcome-details.md)).
 
-### Containment
+### Publishing stays behind an injected seam
 
-A handler throwing is caught, logged with its stack through the tenant-tagged
-logger, and reported as `status: "error"` with `handler: <name>` and the
-`describe()` fields. The invocation still answers 200. A handler cannot take the
-endpoint down for every other tenant, which is the whole point of catching here
-rather than letting the Lambda fail.
-
-## Response body
+Core does not import an AWS SDK. Publishing is a function the caller supplies,
+exactly as `getToken` is:
 
 ```ts
-interface WebhookResponseBody {
-  status: 'ok' | 'ignored' | 'error';
-  eventType: string;
-  ok: boolean;
-  tenantId?: string;
-  handler?: string;
-  reason?: string;                        // why ignored, or what went wrong
-  details?: Record<string, unknown>;      // opaque, straight from the handler
-  [key: string]: unknown;                 // describe() fields merge in here
+interface EventPublisher {
+  publish(message: QueueMessage): Promise<void>;
+  park(trigger: ParkedTrigger): Promise<void>;   // → core DLQ
 }
 ```
 
-`details` is **opaque to core** and echoed verbatim. That is how a handler
-surfaces its own domain results — a stock-check summary, actions taken — without
-core having to model them, and it is why adding an automation never requires a
-change to the response type. The index signature is what lets `describe()`
-fields sit at the top level alongside the fixed ones.
+The deployment module supplies the SQS-backed implementation; tests supply an
+array. This keeps [ADR-0004](adr/0004-zero-runtime-dependencies.md) intact —
+without it, "receive a webhook and enqueue" would be the change that put the AWS
+SDK into core's `dependencies` and its cold start.
 
-Always `statusCode: 200`, always `Content-Type: application/json`.
+### Retry budget
+
+Short, because it is on the synchronous path: a couple of fast attempts, total
+budget in the low seconds. Durability comes from the core DLQ, not from retrying
+harder inside the request
+([ADR-0007](adr/0007-outbound-http-timeouts-and-retries.md), as amended). A 401
+still reloads the tenant context once
+([ADR-0008](adr/0008-reload-context-on-401.md)), and that reload is not part of
+the retry count.
+
+## Queue message
+
+The contract between the two deployables. Versioned, because it is the one shape
+both packages must agree on across independent deploys.
+
+```ts
+interface QueueMessage {
+  schemaVersion: 1;
+  eventType: 'sales_transaction_completed' | 'item_created';
+  tenantId: string;
+  recordId: number;
+  record: unknown;        // the API's representation, snake_case, verbatim
+  receivedAt: string;     // ISO 8601 — when the trigger arrived
+  fetchedAt: string;      // ISO 8601 — when the record was read
+  idempotencyKey: string; // `${tenantId}:${eventType}:${recordId}`
+}
+```
+
+Notes that matter:
+
+- **`record` is verbatim API output.** Core does not reshape it. Those objects
+  round-trip back to Heartland on updates, and translating in both directions
+  invites field-name drift
+  ([04 — Conventions](04-conventions.md#naming-across-the-boundary)).
+- **`idempotencyKey` is safe for today's two event types** because a transaction
+  id and an item id each identify a one-time event. It would be wrong for an
+  `item_updated` event, where the same record changes repeatedly — that key
+  would collapse distinct updates. Adding such an event means revisiting this
+  field, not reusing it.
+- **`receivedAt` and `fetchedAt` are both kept.** The gap between them is the
+  receiver's latency; the gap between `fetchedAt` and processing time is how
+  stale the record may be by the time a handler acts.
+- SQS caps a message at 256 KB. A Heartland record is far smaller, but a future
+  event type carrying line items should check rather than assume.
+
+## Dispatcher
+
+Its own package and its own Lambda, so its own timeout, memory, and concurrency.
+
+```mermaid
+flowchart TD
+    MSG([queue message]) --> VAL{"envelope valid?<br/><i>schemaVersion, fields</i>"}
+    VAL -->|no| POISON["fail immediately<br/><i>poison message → DLQ</i>"]
+    VAL -->|yes| CTX["build tenant context<br/><i>tenant from the envelope</i>"]
+    CTX --> SUP{"handler supports it?"}
+    SUP -->|no| ACK["ack — ignored"]
+    SUP -->|yes| INV["invoke handler<br/><i>record + context</i>"]
+    INV --> OK{"succeeded?"}
+    OK -->|yes| ACK2["ack — log outcome"]
+    OK -->|no| FAIL["fail the message"]
+    FAIL --> RETRY{"maxReceiveCount<br/>exceeded?"}
+    RETRY -->|no| REDELIVER["redelivered later"]
+    RETRY -->|yes| HDLQ["handler DLQ"]
+```
+
+**`supports()` runs here**, with the full record available — more accurate than
+in `0.1.0`, where it saw only the payload. The cost is that unwanted events
+still occupy the queue and a fetch. If that ever matters, the receiver takes a
+declarative filter from configuration, never a copy of handler logic.
+
+**The tenant comes from the envelope**, not from a URL. The tenancy layer is
+otherwise identical: same `TenantRegistry`, same lazy memoized contexts, same
+client construction ([01 — Multi-tenancy](01-multi-tenancy.md)).
+
+**Failure is expressed by failing the message.** The handler retries its own
+work; when exhausted it throws, and the message is left to SQS redelivery until
+`maxReceiveCount` sends it to the handler DLQ by redrive policy. Note the
+asymmetry with the receiver, which writes to the core DLQ *explicitly* because
+it is not consuming a queue and has no redrive policy to lean on.
+
+**A malformed envelope is a poison message** and must not be retried — it will
+never parse. It goes to the DLQ on the first attempt.
+
+Two SQS footguns to get right in the deployment, not in this package:
+
+- **Visibility timeout must exceed the handler Lambda's timeout.** If it does
+  not, a message is redelivered while the first attempt is still running, and a
+  non-idempotent handler does its work twice.
+- **Batch size.** With a batch larger than one, a single failure retries the
+  whole batch unless partial batch failures are reported. Start at one.
+
+## Idempotency is not optional here
+
+Queue delivery is at-least-once, a redelivered message re-runs the handler from
+the start, and a replayed trigger can fetch a real record again
+([ADR-0006](../../design/adr/0006-webhook-is-a-trigger-api-is-truth.md)). A
+handler whose action is not naturally idempotent needs its own guard; the
+cheapest answer for replication is to *set* state to what Heartland says rather
+than *adjust* it by a delta. See
+[invariant 5](../../design/03-invariants.md) and the system-level
+[open questions](../../design/05-open-questions.md).
+
+Two messages for the same record can also be in flight at once — ordering is
+mostly self-correcting because each reads current truth, but simultaneity is
+not. A FIFO queue with the record id as the message group is the lever if it
+bites.
 
 ## Logging shape
 
-Tags accumulate through `logger.child()`, so a line's prefix says where it came
-from:
+Tags accumulate through `logger.child()`, and the deployable is the first tag so
+a line says which process it came from:
 
 ```
-[clutch][sales_transaction_completed]  transport: envelope, routing, parse failures
-[clutch][bamherndon]                  tenant-scoped: handling, outcomes, handler errors
-[clutch][bamherndon][heartland-api]   outbound API calls
+[clutch][receiver][sales_transaction_completed]   envelope, routing, fetch, publish
+[clutch][receiver][bamherndon][heartland-api]     the authoritative fetch
+[clutch][dispatcher][bamherndon]                  handling, outcomes, handler errors
 ```
 
-The transport logger is tagged with the event type; the context logger is tagged
-with the tenant id by `TenantRegistry`; the client adds its own tag. A single
-CloudWatch filter can therefore isolate one store, or one store's API traffic.
+Queue depth and both DLQ depths are the health signals that matter once this
+lands. A receiver that answers `accepted` tells you nothing about whether the
+work happened.
 
-The default logger is `new ConsoleLogger(['clutch'])` — debug suppressed. Pass
-`new ConsoleLogger(['clutch'], true)` to enable the verbose per-line tracing in
-the client.
+## Status against the code
 
-One caveat worth knowing: as of `0.1.0` the envelope log includes **all**
-request headers, values and all. That is deliberate for diagnosis — nobody has
-yet confirmed what Heartland sends — but it means a future shared-secret header
-would land in CloudWatch.
-[ADR-0009](adr/0009-log-header-names-allowlist-values.md) settles it: log every
-header's name, but only allowlisted values.
+`0.1.0` implements the single synchronous pipeline in `src/lambda/pipeline.ts`:
+envelope log → tenant → parse → `supports()` → context → invoke handler →
+respond with the outcome. Mapping that to the target:
+
+| Target behaviour | In `0.1.0` | Gap |
+| --- | --- | --- |
+| Trigger-only parse | Full payload normalized | [#15](https://github.com/bamherndon/Clutch/issues/15) |
+| Authoritative fetch; `rejected` on unresolvable id | Payload trusted as data | [#15](https://github.com/bamherndon/Clutch/issues/15) |
+| Enqueue via injected publisher; `accepted` response | Handler invoked inline | [#16](https://github.com/bamherndon/Clutch/issues/16) |
+| Core DLQ on fetch/publish failure | Event lost | [#16](https://github.com/bamherndon/Clutch/issues/16) |
+| Dispatcher package consuming the queue | — | [#17](https://github.com/bamherndon/Clutch/issues/17) |
+| `supports()` in the dispatcher | In the receiver | [#17](https://github.com/bamherndon/Clutch/issues/17) |
+| Handler takes the API record; outcome to logs | Takes parsed payload; outcome in the response | [#18](https://github.com/bamherndon/Clutch/issues/18) |
+| Queue, DLQs, visibility timeout, throttling | — | [#19](https://github.com/bamherndon/Clutch/issues/19) |
+
+Unchanged by all of this: tenancy ([01](01-multi-tenancy.md)), the Heartland
+client ([03](03-heartland-client.md)), and every convention in
+[04](04-conventions.md).

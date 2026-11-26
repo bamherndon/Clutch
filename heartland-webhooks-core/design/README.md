@@ -15,8 +15,11 @@ connected, and the rules every module honors — start at the top-level
 > ([ADR-0006](../../design/adr/0006-webhook-is-a-trigger-api-is-truth.md)), and
 > receiving is split from handling by a queue
 > ([ADR-0007](../../design/adr/0007-asynchronous-processing-with-dlqs.md)).
-> Neither is implemented yet. Documents below are accurate about the code and
-> flag where a decision has overtaken them.
+> Neither is implemented yet.
+> [02 — Webhook pipeline](02-webhook-pipeline.md) describes the **target state**
+> and ends with a table mapping every stage to the gap issue that closes it.
+> Every other document describes the code as it is and flags where a decision
+> has overtaken it.
 
 **Scope.** This package is tenant-agnostic across Bricks & Minifigs stores, not
 across retailers: it models the Heartland standard fields plus the custom fields
@@ -30,7 +33,7 @@ module.
 | Document | What it answers |
 | --- | --- |
 | [01 — Multi-tenancy](01-multi-tenancy.md) | How one deployment serves several Heartland instances |
-| [02 — Webhook pipeline](02-webhook-pipeline.md) | The exact lifecycle of one inbound webhook |
+| [02 — Webhook pipeline](02-webhook-pipeline.md) | The target lifecycle: receiver, queue message, dispatcher — and the gaps to it |
 | [03 — Heartland client](03-heartland-client.md) | The REST surface and the HTTP layer underneath it |
 | [04 — Conventions](04-conventions.md) | Errors, logging, parsing, testing, naming |
 | [05 — Extending core](05-extending.md) | Writing a handler, adding an event type, adding an endpoint |
@@ -70,3 +73,11 @@ covered by `tests/`; file references are given so a claim can be checked in one
 jump. A change to an interface in `src/index.ts`, to the pipeline's order of
 operations, or to the tenancy model should land with the matching design edit.
 Where documentation and code disagree, the code wins and the document is a bug.
+
+**One exception, stated so it is not mistaken for drift.**
+[02 — Webhook pipeline](02-webhook-pipeline.md) describes a target the code has
+not reached, by intent: the decisions are made, and recording them is more
+useful than describing a shape we are leaving. It carries a banner, marks the
+`0.1.0` behaviour where it differs, and ends with the issues that close each
+gap. A document that describes a target must say so and must name the gap —
+otherwise it is indistinguishable from a document that is simply wrong.
