@@ -352,33 +352,63 @@ since a design that skips these is incomplete by definition.
 | 7 | **Observability** | Per run: items synced, created, updated, deleted, skipped-with-reason, failed. Skips are the interesting number — a rising "no bricklinkId" count is a data-quality signal, and it must not look like silence. |
 | 8 | **Data assumptions** | Requires `bricklinkId` on an item to list it at all; missing is a per-item data problem, reported and skipped ([ADR-0005](../adr/0005-assume-bam-item-schema.md)). |
 
-## What I need from you
+## Policy decisions
 
-These are store-policy and data questions, not technical ones, and the design is
-blocked on them in the places noted.
+Four questions that are store policy rather than engineering, each with the
+recommendation the design currently assumes. Confirmed already: a casefig is a
+MINIFIG to BrickLink, so the table above stands.
 
-1. **Should `available_online?` gate listing?** It is `false` on the used set
-   above. If the store already uses that flag to mean "sell this online", it is
-   the natural switch for replication — and it would give staff per-item control
-   without touching Clutch. If it means something else, say so and I will leave
-   it out. This is the only question that could still change the planner's shape.
-2. **Is a casefig a MINIFIG to BrickLink?** The table assumes so. If a casefig
-   is catalogued as something else, its `item.type` is wrong and every create
-   fails.
-3. **Which fields do we own?** Quantity, certainly. Price? Description? If
-   Clutch owns `unit_price`, nobody can price-adjust on BrickLink by hand
-   without being overwritten. This is [#24](https://github.com/bamherndon/Clutch/issues/24).
-4. **Zero stock.** Delete the lot, or keep it at quantity 0? Also needs
-   verifying whether BrickLink auto-removes a lot at zero.
-5. **Creating listings.** Should `item_created` publish a listing immediately
-   (quantity 0 until stock arrives), or should a listing appear only when stock
-   first exists? The second is less chatty; the first makes the catalog mapping
-   fail early and visibly.
-6. **Multi-location.** `GET /inventory/values` groups by item **and location**.
-   Is a tenant's BrickLink stock one location's on-hand, or the sum?
-7. **Colour.** Sets and minifigs take `color_id` 0. Confirmed by the
-   sub-department table — no parts list, so colour is never load-bearing. Flag
-   if that changes.
+### 1. Which fields does Clutch own?
+
+Quantity, certainly. The question is `unit_price` and `description`.
+
+If Clutch owns `unit_price`, nobody can price-adjust a lot on BrickLink by hand —
+the next sync reverts it. If Clutch does not, listings drift from Heartland
+pricing and the channel slowly stops reflecting the store.
+
+**Recommended:** own `quantity` and `unit_price` on every write;
+`description` on create only, never overwritten; `remarks` always ours, since it
+carries the identity stamp. That makes BrickLink a true replica, consistent with
+[ADR-0001](../adr/0001-heartland-system-of-record.md) — and it means
+channel-specific pricing, if it is ever wanted, has to come from a Heartland
+price list rather than from editing BrickLink.
+
+### 2. Zero stock — delete the lot, or set quantity to 0?
+
+**Verify first:** whether BrickLink accepts a lot at quantity 0 or removes it
+automatically.
+
+Deleting loses the lot and forces a re-create when stock returns: a new
+`inventory_id`, a fresh stamp, and mapping churn. Keeping it at zero preserves
+the mapping and is cheaper, at the cost of zero-quantity lots sitting in the
+store's inventory views.
+
+**Recommended:** quantity 0 if BrickLink permits it, falling back to delete and
+`forget()` the mapping. Fewer creates means fewer chances to create a duplicate.
+
+### 3. When does a listing get created?
+
+On `item_created`, or only when stock first exists?
+
+Creating at quantity 0 surfaces a bad `bricklink_id` immediately, which is
+worth a lot — the alternative is discovering it at the first sale. But it
+depends on question 2 allowing zero, and it fills the store with empty lots.
+
+**Recommended:** create only on first positive stock, and have the
+`item_created` handler do a **validation-only** pass — resolve `bricklink_id`
+against BrickLink's catalog (`GET /items/{type}/{no}`) and report a skip if it
+does not exist. That buys the early, visible failure without the empty lots.
+
+### 4. Which location's on-hand?
+
+`GET /api/inventory/values` groups by item **and** location. Herndon reports a
+single location, and the Heartland tooling defaults to location `100005`.
+
+**Recommended:** an explicit per-tenant location configuration rather than a
+sum. Summing is the dangerous default: it would publish stock sitting in a
+parts-out, repair, or staging location as if it were sellable. If a tenant
+genuinely sells from several locations, that is a list of location ids, stated
+rather than inferred.
 
 ## Open risks
 
